@@ -88,6 +88,13 @@ func openCache() (*cache.Cache, error) {
 // as long as dir is set to listedPackage.Dir.
 func parseFiles(lpkg *listedPackage, dir string, paths []string) (files []*ast.File, err error) {
 	mainPackage := lpkg.Name == "main" && lpkg.ForTest == ""
+	hasReflectTemplate := false
+	for _, candidate := range paths {
+		if filepath.Base(candidate) == "reflect_abi_code.go" {
+			hasReflectTemplate = true
+			break
+		}
+	}
 
 	for _, path := range paths {
 		if !filepath.IsAbs(path) {
@@ -102,7 +109,14 @@ func parseFiles(lpkg *listedPackage, dir string, paths []string) (files []*ast.F
 			if err != nil {
 				return nil, err
 			}
-		} else if mainPackage && reflectPatchFile == "" && !strings.HasPrefix(base, "_cgo_") {
+		} else if mainPackage && hasReflectTemplate && base == "reflect_abi_code.go" && reflectPatchFile == "" {
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return nil, err
+			}
+			src = strings.ReplaceAll(string(content), "//disabledgo:", "//go:")
+			reflectPatchFile = path
+		} else if mainPackage && !hasReflectTemplate && reflectPatchFile == "" && !strings.HasPrefix(base, "_cgo_") {
 			// Note that we cannot add our code to e.g. _cgo_gotypes.go.
 			src, err = reflectMainPrePatch(path)
 			if err != nil {
@@ -123,7 +137,7 @@ func parseFiles(lpkg *listedPackage, dir string, paths []string) (files []*ast.F
 
 		files = append(files, file)
 	}
-	if mainPackage && reflectPatchFile == "" {
+	if mainPackage && !hasReflectTemplate && reflectPatchFile == "" {
 		return nil, fmt.Errorf("main packages must get reflect code patched in")
 	}
 	return files, nil
