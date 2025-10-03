@@ -45,7 +45,8 @@ type sharedCacheType struct {
 	//
 	// The only unique way to identify garble's version without being published
 	// or committed is to use its content ID from the build cache.
-	BinaryContentID []byte
+	BinaryContentID    []byte
+	BuildFlagHashInput []byte
 
 	GOGARBLE string
 
@@ -86,7 +87,9 @@ func loadSharedCache() error {
 	defer func() {
 		log.Printf("shared cache loaded in %s from %s", debugSince(startTime), f.Name())
 	}()
-	defer f.Close()
+	defer func(f *os.File) {
+		_ = f.Close()
+	}(f)
 	if err := gob.NewDecoder(f).Decode(&sharedCache); err != nil {
 		return fmt.Errorf("cannot decode shared file: %v", err)
 	}
@@ -400,7 +403,7 @@ func appendListedPackages(packages []string, mainBuild bool) error {
 
 			pkg.ToObfuscate = true
 			anyToObfuscate = true
-			if len(pkg.GarbleActionID) == 0 {
+			if pkg.GarbleActionID == [sha256.Size]byte{} {
 				return fmt.Errorf("package %q to be obfuscated lacks build id?", pkg.ImportPath)
 			}
 		}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/gob"
 	"fmt"
 	"go/ast"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/rogpeppe/go-internal/cache"
 	"golang.org/x/tools/go/ast/astutil"
@@ -22,6 +24,11 @@ import (
 type (
 	funcFullName = string // as per go/types.Func.FullName
 	objectString = string // as per recordedObjectString
+)
+
+var (
+	pkgCacheMu  sync.Mutex
+	pkgCacheMem = make(map[[sha256.Size]byte]pkgCache)
 )
 
 // pkgCache contains information about a package that will be stored in fsCache.
@@ -123,6 +130,14 @@ func parseFiles(lpkg *listedPackage, dir string, paths []string) (files []*ast.F
 }
 
 func loadPkgCache(lpkg *listedPackage, pkg *types.Package, files []*ast.File, info *types.Info, ssaPkg *ssa.Package) (pkgCache, error) {
+	key := lpkg.GarbleActionID
+	pkgCacheMu.Lock()
+	if cached, ok := pkgCacheMem[key]; ok {
+		pkgCacheMu.Unlock()
+		return cached, nil
+	}
+	pkgCacheMu.Unlock()
+
 	fsCache, err := openCache()
 	if err != nil {
 		return pkgCache{}, err
@@ -134,14 +149,26 @@ func loadPkgCache(lpkg *listedPackage, pkg *types.Package, files []*ast.File, in
 		if err != nil {
 			return pkgCache{}, err
 		}
-		defer f.Close()
+		defer func(f *os.File) {
+			_ = f.Close()
+		}(f)
 		var loaded pkgCache
 		if err := gob.NewDecoder(f).Decode(&loaded); err != nil {
 			return pkgCache{}, fmt.Errorf("gob decode: %w", err)
 		}
+		pkgCacheMu.Lock()
+		pkgCacheMem[key] = loaded
+		pkgCacheMu.Unlock()
 		return loaded, nil
 	}
-	return computePkgCache(fsCache, lpkg, pkg, files, info, ssaPkg)
+	computed, err := computePkgCache(fsCache, lpkg, pkg, files, info, ssaPkg)
+	if err != nil {
+		return pkgCache{}, err
+	}
+	pkgCacheMu.Lock()
+	pkgCacheMem[key] = computed
+	pkgCacheMu.Unlock()
+	return computed, nil
 }
 
 func computePkgCache(fsCache *cache.Cache, lpkg *listedPackage, pkg *types.Package, files []*ast.File, info *types.Info, ssaPkg *ssa.Package) (pkgCache, error) {
@@ -178,7 +205,9 @@ func computePkgCache(fsCache *cache.Cache, lpkg *listedPackage, pkg *types.Packa
 				if err != nil {
 					return err
 				}
-				defer f.Close()
+				defer func(f *os.File) {
+					_ = f.Close()
+				}(f)
 				if err := gob.NewDecoder(f).Decode(&computed); err != nil {
 					return fmt.Errorf("gob decode: %w", err)
 				}
@@ -236,7 +265,7 @@ type importerWithMap struct {
 	importFrom func(path, dir string, mode types.ImportMode) (*types.Package, error)
 }
 
-func (im importerWithMap) Import(path string) (*types.Package, error) {
+func (im importerWithMap) Import(_ string) (*types.Package, error) {
 	panic("should never be called")
 }
 
@@ -248,14 +277,16 @@ func (im importerWithMap) ImportFrom(path, dir string, mode types.ImportMode) (*
 }
 
 func importerForPkg(lpkg *listedPackage) importerWithMap {
+	imp := importer.ForCompiler(fset, "gc", func(path string) (io.ReadCloser, error) {
+		pkg, err := listPackage(lpkg, path)
+		if err != nil {
+			return nil, err
+		}
+		return os.Open(pkg.Export)
+	}).(types.ImporterFrom)
+
 	return importerWithMap{
-		importFrom: importer.ForCompiler(fset, "gc", func(path string) (io.ReadCloser, error) {
-			pkg, err := listPackage(lpkg, path)
-			if err != nil {
-				return nil, err
-			}
-			return os.Open(pkg.Export)
-		}).(types.ImporterFrom).ImportFrom,
-		importMap: lpkg.ImportMap,
+		importFrom: imp.ImportFrom, // method value; receiver already bound
+		importMap:  lpkg.ImportMap,
 	}
 }

@@ -1,0 +1,47 @@
+# Ensure garble test copes with reflection-heavy tests reminiscent of stdlib expectations (issue #966)
+exec garble test -v
+stdout PASS
+
+# Sanity-check behaviour matches a standard go test run.
+go test -v
+stdout PASS
+
+-- go.mod --
+module test/reflectpkg
+
+go 1.23
+
+-- sample_test.go --
+package reflectpkg
+
+import (
+	"bytes"
+	"encoding/xml"
+	"reflect"
+	"testing"
+)
+
+type Plain struct {
+	V bool `xml:"V"`
+}
+
+func (p Plain) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	start.Name.Local = "Plain"
+	type alias Plain
+	return e.EncodeElement(alias(p), start)
+}
+
+func TestReflectionFriendly(t *testing.T) {
+	typ := reflect.TypeOf(Plain{})
+	if typ.Kind() != reflect.Struct {
+		t.Fatalf("unexpected kind %s", typ.Kind())
+	}
+
+	data, err := xml.Marshal(Plain{V: true})
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	if !bytes.Contains(data, []byte("<V>true</V>")) {
+		t.Fatalf("missing expected field: %s", data)
+	}
+}

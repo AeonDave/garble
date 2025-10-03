@@ -94,6 +94,19 @@ var (
 	sumBuffer [sha256.Size]byte
 )
 
+func buildFlagHashInput() []byte {
+	if sharedCache == nil {
+		return nil
+	}
+	if len(sharedCache.BuildFlagHashInput) == 0 {
+		var buf bytes.Buffer
+		_, _ = fmt.Fprintf(&buf, " GOGARBLE=%s", sharedCache.GOGARBLE)
+		appendFlags(&buf, true)
+		sharedCache.BuildFlagHashInput = buf.Bytes()
+	}
+	return sharedCache.BuildFlagHashInput
+}
+
 // addGarbleToHash takes some arbitrary input bytes,
 // typically a hash such as an action ID or a content ID,
 // and returns a new hash which also contains garble's own deterministic inputs.
@@ -114,8 +127,9 @@ func addGarbleToHash(inputHash []byte) [sha256.Size]byte {
 	// We also need to add the selected options to the full version string,
 	// because all of them result in different output. We use spaces to
 	// separate the env vars and flags, to reduce the chances of collisions.
-	fmt.Fprintf(hasher, " GOGARBLE=%s", sharedCache.GOGARBLE)
-	appendFlags(hasher, true)
+	if flagBytes := buildFlagHashInput(); len(flagBytes) > 0 {
+		hasher.Write(flagBytes)
+	}
 	// addGarbleToHash returns the sum buffer, so we need a new copy.
 	// Otherwise the next use of the global sumBuffer would conflict.
 	var sumBuffer [sha256.Size]byte
@@ -128,17 +142,17 @@ func addGarbleToHash(inputHash []byte) [sha256.Size]byte {
 // If forBuildHash is set, only the flags affecting a build are written.
 func appendFlags(w io.Writer, forBuildHash bool) {
 	if flagLiterals {
-		io.WriteString(w, " -literals")
+		_, _ = io.WriteString(w, " -literals")
 	}
 	if flagTiny {
-		io.WriteString(w, " -tiny")
+		_, _ = io.WriteString(w, " -tiny")
 	}
 	if flagDebug && !forBuildHash {
 		// -debug doesn't affect the build result at all,
 		// so don't give it separate entries in the build cache.
 		// If the user really wants to see debug info for already built deps,
 		// they can use "go clean cache" or the "-a" build flag to rebuild.
-		io.WriteString(w, " -debug")
+		_, _ = io.WriteString(w, " -debug")
 	}
 	if flagDebugDir != "" && !forBuildHash {
 		// -debugdir is a bit special.
@@ -153,18 +167,18 @@ func appendFlags(w io.Writer, forBuildHash bool) {
 		// by using "-debugdir=yes" here, and caching the obfuscated source.
 		// Incremental builds would recover the cached source
 		// to repopulate the output directory if it was removed.
-		io.WriteString(w, " -debugdir=")
-		io.WriteString(w, flagDebugDir)
+		_, _ = io.WriteString(w, " -debugdir=")
+		_, _ = io.WriteString(w, flagDebugDir)
 	}
 	if flagSeed.present() {
-		io.WriteString(w, " -seed=")
-		io.WriteString(w, flagSeed.String())
+		_, _ = io.WriteString(w, " -seed=")
+		_, _ = io.WriteString(w, flagSeed.String())
 	}
 	if flagControlFlow && forBuildHash {
-		io.WriteString(w, " -ctrlflow")
+		_, _ = io.WriteString(w, " -ctrlflow")
 	}
 	if literals.TestObfuscator != "" && forBuildHash {
-		io.WriteString(w, literals.TestObfuscator)
+		_, _ = io.WriteString(w, literals.TestObfuscator)
 	}
 }
 
@@ -337,7 +351,7 @@ func hashWithCustomSalt(salt []byte, name string) string {
 	hasher.Reset()
 	hasher.Write(salt)
 	hasher.Write(flagSeed.bytes)
-	io.WriteString(hasher, name)
+	_, _ = io.WriteString(hasher, name)
 	sum := hasher.Sum(sumBuffer[:0])
 
 	// The byte after neededSumBytes is never used as part of the name,
