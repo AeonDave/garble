@@ -46,7 +46,9 @@ type sharedCacheType struct {
 	// The only unique way to identify garble's version without being published
 	// or committed is to use its content ID from the build cache.
 	BinaryContentID    []byte
+	BuildNonce         []byte
 	BuildFlagHashInput []byte
+	SeedHashInput      []byte
 
 	GOGARBLE string
 

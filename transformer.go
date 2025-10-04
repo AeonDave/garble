@@ -622,7 +622,7 @@ func (tf *transformer) parseCompileFiles(paths []string) ([]*ast.File, error) {
 func (tf *transformer) seedObfuscationRand() error {
 	randSeed := tf.curPkg.GarbleActionID[:]
 	if flagSeed.present() {
-		randSeed = flagSeed.bytes
+		randSeed = seedHashInput()
 	}
 	if len(randSeed) < 8 {
 		return fmt.Errorf("seed length %d shorter than 8 bytes", len(randSeed))
@@ -881,6 +881,7 @@ func (tf *transformer) transformLinkname(localName, newName string) (string, str
 	newName = lpkg.obfuscatedImportPath() + "." + newForeignName
 	return localName, newName
 }
+
 func (tf *transformer) loadActionGraph() ([]buildAction, error) {
 	if tf.actionGraph != nil {
 		return tf.actionGraph, nil

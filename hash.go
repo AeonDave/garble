@@ -107,6 +107,27 @@ func buildFlagHashInput() []byte {
 	return sharedCache.BuildFlagHashInput
 }
 
+func seedHashInput() []byte {
+	if sharedCache == nil {
+		return flagSeed.bytes
+	}
+	if len(sharedCache.SeedHashInput) == 0 {
+		sharedCache.SeedHashInput = combineSeedAndNonce(flagSeed.bytes, sharedCache.BuildNonce)
+	}
+	return sharedCache.SeedHashInput
+}
+
+func combineSeedAndNonce(seed, nonce []byte) []byte {
+	h := sha256.New()
+	if len(seed) > 0 {
+		h.Write(seed)
+	}
+	if len(nonce) > 0 {
+		h.Write(nonce)
+	}
+	return h.Sum(nil)
+}
+
 // addGarbleToHash takes some arbitrary input bytes,
 // typically a hash such as an action ID or a content ID,
 // and returns a new hash which also contains garble's own deterministic inputs.
@@ -130,6 +151,10 @@ func addGarbleToHash(inputHash []byte) [sha256.Size]byte {
 	if flagBytes := buildFlagHashInput(); len(flagBytes) > 0 {
 		hasher.Write(flagBytes)
 	}
+	if seedBytes := seedHashInput(); len(seedBytes) > 0 {
+		hasher.Write(seedBytes)
+	}
+
 	// addGarbleToHash returns the sum buffer, so we need a new copy.
 	// Otherwise the next use of the global sumBuffer would conflict.
 	var sumBuffer [sha256.Size]byte
@@ -220,7 +245,7 @@ func runtimeHashWithCustomSalt(salt []byte) uint32 {
 	if !flagSeed.present() {
 		hasher.Write(sharedCache.ListedPackages["runtime"].GarbleActionID[:])
 	} else {
-		hasher.Write(flagSeed.bytes)
+		hasher.Write(seedHashInput())
 	}
 	hasher.Write(salt)
 	sum := hasher.Sum(sumBuffer[:0])
@@ -240,16 +265,16 @@ func entryOffKey() uint32 {
 }
 
 func hashWithPackage(pkg *listedPackage, name string) string {
-	// If the user provided us with an obfuscation seed,
-	// we use that with the package import path directly..
-	// Otherwise, we use GarbleActionID as a fallback salt.
 	if !flagSeed.present() {
 		return hashWithCustomSalt(pkg.GarbleActionID[:], name)
 	}
-	// Use a separator at the end of ImportPath as a salt,
-	// to ensure that "pkgfoo.bar" and "pkg.foobar" don't both hash
-	// as the same string "pkgfoobar".
-	return hashWithCustomSalt([]byte(pkg.ImportPath+"|"), name)
+
+	h := sha256.New()
+	h.Write([]byte(pkg.ImportPath))
+	h.Write([]byte("|"))
+	h.Write(seedHashInput())
+	salt := h.Sum(nil)
+	return hashWithCustomSalt(salt, name)
 }
 
 // hashWithStruct is separate from hashWithPackage since Go
@@ -350,7 +375,7 @@ func hashWithCustomSalt(salt []byte, name string) string {
 
 	hasher.Reset()
 	hasher.Write(salt)
-	hasher.Write(flagSeed.bytes)
+	hasher.Write(seedHashInput())
 	_, _ = io.WriteString(hasher, name)
 	sum := hasher.Sum(sumBuffer[:0])
 

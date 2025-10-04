@@ -38,7 +38,7 @@ func TestMain(m *testing.M) {
 	// If GORACE is set, we assume that the caller knows what they are doing,
 	// and we don't try to replace or modify their flags.
 	if os.Getenv("GORACE") == "" {
-		os.Setenv("GORACE", "atexit_sleep_ms=10")
+		_ = os.Setenv("GORACE", "atexit_sleep_ms=10")
 	}
 	if os.Getenv("RUN_GARBLE_MAIN") == "true" {
 		main()
@@ -108,6 +108,9 @@ func TestScript(t *testing.T) {
 			env.Setenv("GOGC", "off")
 
 			env.Setenv("gofullversion", runtime.Version())
+
+			// Default deterministic nonce for test suite to keep obfuscation stable.
+			env.Setenv("GARBLE_BUILD_NONCE", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
 			env.Setenv("EXEC_PATH", execPath)
 
 			if os.Getenv("GOCOVERDIR") != "" {
@@ -224,7 +227,7 @@ func bincmp(ts *testscript.TestScript, neg bool, args []string) {
 	if data1 != data2 {
 		if _, err := exec.LookPath("diffoscope"); err == nil {
 			// We'll error below; ignore the exec error here.
-			ts.Exec("diffoscope",
+			_ = ts.Exec("diffoscope",
 				"--diff-context", "2", // down from 7 by default
 				"--max-text-report-size", "4096", // no limit (in bytes) by default; avoid huge output
 				ts.MkAbs(args[0]), ts.MkAbs(args[1]))
@@ -346,7 +349,9 @@ func generateLiterals(ts *testscript.TestScript, neg bool, args []string) {
 	}
 
 	codeFile := createFile(ts, codePath)
-	defer codeFile.Close()
+	defer func(codeFile *os.File) {
+		_ = codeFile.Close()
+	}(codeFile)
 
 	if err := printer.Fprint(codeFile, token.NewFileSet(), file); err != nil {
 		ts.Fatalf("%v", err)

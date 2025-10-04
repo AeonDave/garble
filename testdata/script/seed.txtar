@@ -7,6 +7,9 @@
 # so we can reuse them across tests and make better use of the shared build cache.
 env SEED1=OQg9kACEECQ
 env SEED2=NruiDmVz6/s
+env DEFAULT_NONCE=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+env NONCE_ALT=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
+env GARBLE_BUILD_NONCE=${DEFAULT_NONCE}
 
 # Check the binary with a given base64 encoded seed.
 exec garble -seed=${SEED1} build
@@ -37,6 +40,15 @@ exec ./main$exe test/main
 cp stderr mainpkg-seed-static-1
 ! bincmp mainpkg-seed-static-1 importedpkg-seed-static-1
 
+env GARBLE_BUILD_NONCE=${NONCE_ALT}
+exec garble -seed=${SEED1} build
+! bincmp main$exe main_seed1$exe
+
+env GARBLE_BUILD_NONCE=${DEFAULT_NONCE}
+exec garble -seed=${SEED1} build
+bincmp main$exe main_seed1$exe
+
+
 # Using different flags which affect the build, such as -literals or -tiny,
 # should result in the same obfuscation as long as the seed is constant.
 # TODO: also test that changing non-garble build parameters,
@@ -62,8 +74,10 @@ cp stderr importedpkg-seed-static-2
 ! bincmp importedpkg-seed-static-2 importedpkg-seed-static-1
 
 # Use a random seed, which should always trigger a full build.
+env GARBLE_BUILD_NONCE=
 exec garble -seed=random build -v
 stderr -count=1 '^-seed chosen at random: .+'
+stderr -count=1 '^-nonce chosen at random: .+'
 stderr -count=1 '^runtime$'
 stderr -count=1 '^test/main$'
 exec ./main$exe
@@ -78,6 +92,7 @@ cp stderr importedpkg-seed-random-1
 # Also check that the random binary is not reproducible.
 cp main$exe main_random$exe
 rm main$exe
+env GARBLE_BUILD_NONCE=
 exec garble -seed=random build -v
 stderr .
 ! bincmp main$exe main_random$exe
@@ -85,6 +100,9 @@ stderr .
 exec ./main$exe test/main/imported
 cp stderr importedpkg-seed-random-2
 ! bincmp importedpkg-seed-random-2 importedpkg-seed-random-1
+
+env GARBLE_BUILD_NONCE=${DEFAULT_NONCE}
+
 
 # Finally, ensure that our runtime and reflect test code does what we think.
 go build

@@ -148,6 +148,16 @@ To always use a different seed for each build, use `-seed=random`.
 Note that extra care should be taken when using custom seeds:
 if a `-seed` value used in a build is lost, `garble reverse` will not work.
 
+In addition to the seed, garble derives a build nonce which is mixed into every obfuscated name.
+The nonce is printed when `-seed=random` is used and can be provided explicitly via the
+`GARBLE_BUILD_NONCE` environment variable. For reproducible builds – and for `garble reverse`
+to succeed – make sure to preserve both the seed and the nonce that were used for the original build.
+If either value is lost, the obfuscation cannot be undone.
+
+For teams who deliberately do not want reversal to be possible, avoid recording those values.
+Without the corresponding seed and nonce, the resulting binaries are effectively non-reversible.
+
+
 ### Caveats
 
 Most of these can improve with time and effort. The purpose of this section is

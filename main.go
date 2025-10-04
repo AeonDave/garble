@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"cmp"
 	cryptorand "crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -105,11 +106,12 @@ var flagSet = flag.NewFlagSet("garble", flag.ExitOnError)
 var rxGarbleFlag = regexp.MustCompile(`-(?:literals|tiny|debug|debugdir|seed)(?:$|=)`)
 
 var (
-	flagLiterals bool
-	flagTiny     bool
-	flagDebug    bool
-	flagDebugDir string
-	flagSeed     seedFlag
+	flagLiterals     bool
+	flagTiny         bool
+	flagDebug        bool
+	flagDebugDir     string
+	flagSeed         seedFlag
+	buildNonceRandom bool
 	// TODO(pagran): in the future, when control flow obfuscation will be stable migrate to flag
 	flagControlFlow = os.Getenv("GARBLE_EXPERIMENTAL_CONTROLFLOW") == "1"
 
@@ -128,6 +130,7 @@ func init() {
 	flagSet.Var(&flagSeed, "seed", "Provide a base64-encoded seed, e.g. -seed=o9WDTZ4CN4w\nFor a random seed, provide -seed=random")
 }
 
+//goland:noinspection GoUnhandledErrorResult
 func main() {
 	if dir := os.Getenv("GARBLE_WRITE_CPUPROFILES"); dir != "" {
 		f, err := os.CreateTemp(dir, "garble-cpu-*.pprof")
@@ -164,7 +167,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "garble allocs: %d\n", memStats.Mallocs)
 		}
 	}()
-	flagSet.Parse(os.Args[1:])
+	if err := flagSet.Parse(os.Args[1:]); err != nil {
+		fmt.Fprintln(os.Stderr, "Error parsing flags:", err)
+		usage()
+		os.Exit(2)
+	}
 	log.SetPrefix("[garble] ")
 	log.SetFlags(0) // no timestamps, as they aren't very useful
 	if flagDebug {
@@ -179,19 +186,16 @@ func main() {
 		os.Exit(2)
 	}
 
-	// If a random seed was used, the user won't be able to reproduce the
-	// same output or failure unless we print the random seed we chose.
-	// If the build failed and a random seed was used,
-	// the failure might not reproduce with a different seed.
-	// Print it before we exit.
+	// If a random seed was used, emit it so the build can be reproduced.\n	// (The per-build nonce is printed earlier when it was generated at random.)
 	if flagSeed.random {
-		fmt.Fprintf(os.Stderr, "-seed chosen at random: %s\n", base64.RawStdEncoding.EncodeToString(flagSeed.bytes))
+		_, _ = fmt.Fprintf(os.Stderr, "-seed chosen at random: %s\n", flagSeed.String())
 	}
 	if err := mainErr(args); err != nil {
-		if code, ok := err.(errJustExit); ok {
+		var code errJustExit
+		if errors.As(err, &code) {
 			os.Exit(int(code))
 		}
-		fmt.Fprintln(os.Stderr, err)
+		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
@@ -211,7 +215,7 @@ func mainErr(args []string) error {
 	switch command {
 	case "help":
 		if hasHelpFlag(args) || len(args) > 1 {
-			fmt.Fprintf(os.Stderr, "usage: garble help [command]\n")
+			_, _ = fmt.Fprintf(os.Stderr, "usage: garble help [command]\n")
 			return errJustExit(0)
 		}
 		if len(args) == 1 {
@@ -221,7 +225,7 @@ func mainErr(args []string) error {
 		return errJustExit(0)
 	case "version":
 		if hasHelpFlag(args) || len(args) > 0 {
-			fmt.Fprintf(os.Stderr, "usage: garble version\n")
+			_, _ = fmt.Fprintf(os.Stderr, "usage: garble version\n")
 			return errJustExit(2)
 		}
 		info, ok := debug.ReadBuildInfo()
@@ -257,7 +261,7 @@ func mainErr(args []string) error {
 		cmd, err := toolexecCmd(command, args)
 		defer func() {
 			if err := os.RemoveAll(os.Getenv("GARBLE_SHARED")); err != nil {
-				fmt.Fprintf(os.Stderr, "could not clean up GARBLE_SHARED: %v\n", err)
+				_, _ = fmt.Fprintf(os.Stderr, "could not clean up GARBLE_SHARED: %v\n", err)
 			}
 			// skip the trim if we didn't even start a build
 			if sharedCache != nil {
@@ -266,7 +270,7 @@ func mainErr(args []string) error {
 					err = fsCache.Trim()
 				}
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "could not trim GARBLE_CACHE: %v\n", err)
+					_, _ = fmt.Fprintf(os.Stderr, "could not trim GARBLE_CACHE: %v\n", err)
 				}
 			}
 		}()
@@ -324,10 +328,10 @@ func mainErr(args []string) error {
 			defer unlock()
 
 			executablePath = modifiedLinkPath
-			os.Setenv(linker.MagicValueEnv, strconv.FormatUint(uint64(magicValue()), 10))
-			os.Setenv(linker.EntryOffKeyEnv, strconv.FormatUint(uint64(entryOffKey()), 10))
+			_ = os.Setenv(linker.MagicValueEnv, strconv.FormatUint(uint64(magicValue()), 10))
+			_ = os.Setenv(linker.EntryOffKeyEnv, strconv.FormatUint(uint64(entryOffKey()), 10))
 			if flagTiny {
-				os.Setenv(linker.TinyEnv, "true")
+				_ = os.Setenv(linker.TinyEnv, "true")
 			}
 
 			log.Printf("replaced linker with: %s", executablePath)
@@ -356,7 +360,7 @@ func toolexecCmd(command string, args []string) (*exec.Cmd, error) {
 	flags, args := splitFlagsFromArgs(args)
 	if hasHelpFlag(flags) {
 		out, _ := exec.Command("go", command, "-h").CombinedOutput()
-		fmt.Fprintf(os.Stderr, `
+		_, _ = fmt.Fprintf(os.Stderr, `
 usage: garble [garble flags] %s [arguments]
 
 This command wraps "go %s". Below is its help:
@@ -364,15 +368,25 @@ This command wraps "go %s". Below is its help:
 %s`[1:], command, command, out)
 		return nil, errJustExit(2)
 	}
-	for _, flag := range flags {
-		if rxGarbleFlag.MatchString(flag) {
-			return nil, fmt.Errorf("garble flags must precede command, like: garble %s build ./pkg", flag)
+	for _, ff := range flags {
+		if rxGarbleFlag.MatchString(ff) {
+			return nil, fmt.Errorf("garble flags must precede command, like: garble %s build ./pkg", ff)
 		}
 	}
 
 	// Here is the only place we initialize the cache.
 	// The sub-processes will parse it from a shared gob file.
 	sharedCache = &sharedCacheType{}
+	nonce, nonceRandom, err := generateBuildNonce()
+	if err != nil {
+		return nil, err
+	}
+	sharedCache.BuildNonce = nonce
+	sharedCache.SeedHashInput = combineSeedAndNonce(flagSeed.bytes, nonce)
+	buildNonceRandom = nonceRandom
+	if buildNonceRandom {
+		_, _ = fmt.Fprintf(os.Stderr, "-nonce chosen at random: %s\n", base64.RawStdEncoding.EncodeToString(nonce))
+	}
 
 	// Note that we also need to pass build flags to 'go list', such
 	// as -tags.
@@ -422,7 +436,7 @@ This command wraps "go %s". Below is its help:
 	if err != nil {
 		return nil, err
 	}
-	os.Setenv("GARBLE_SHARED", sharedTempDir)
+	_ = os.Setenv("GARBLE_SHARED", sharedTempDir)
 
 	if flagDebugDir != "" {
 		origDir := flagDebugDir
@@ -497,40 +511,66 @@ This command wraps "go %s". Below is its help:
 
 type seedFlag struct {
 	random bool
+	raw    []byte
 	bytes  []byte
 }
 
 func (f seedFlag) present() bool { return len(f.bytes) > 0 }
 
 func (f seedFlag) String() string {
-	return base64.RawStdEncoding.EncodeToString(f.bytes)
+	src := f.raw
+	if len(src) == 0 {
+		src = f.bytes
+	}
+	return base64.RawStdEncoding.EncodeToString(src)
 }
 
 func (f *seedFlag) Set(s string) error {
+	f.random = false
+	f.raw = nil
+	f.bytes = nil
 	if s == "random" {
-		f.random = true // to show the random seed we chose
-
-		f.bytes = make([]byte, 16) // random 128 bit seed
-		if _, err := cryptorand.Read(f.bytes); err != nil {
+		buf := make([]byte, 32)
+		if _, err := cryptorand.Read(buf); err != nil {
 			return fmt.Errorf("error generating random seed: %v", err)
 		}
-	} else {
-		// We expect unpadded base64, but to be nice, accept padded
-		// strings too.
-		s = strings.TrimRight(s, "=")
-		seed, err := base64.RawStdEncoding.DecodeString(s)
-		if err != nil {
-			return fmt.Errorf("error decoding seed: %v", err)
-		}
-
-		// TODO: Note that we always use 8 bytes; any bytes after that are
-		// entirely ignored. That may be confusing to the end user.
-		if len(seed) < 8 {
-			return fmt.Errorf("-seed needs at least 8 bytes, have %d", len(seed))
-		}
-		f.bytes = seed
+		f.random = true
+		f.raw = buf
+		f.bytes = deriveSeedEntropy(buf)
+		return nil
 	}
+
+	s = strings.TrimRight(s, "=")
+	seed, err := base64.RawStdEncoding.DecodeString(s)
+	if err != nil {
+		return fmt.Errorf("error decoding seed: %v", err)
+	}
+	f.raw = seed
+	f.bytes = deriveSeedEntropy(seed)
 	return nil
+}
+
+func deriveSeedEntropy(input []byte) []byte {
+	sum := sha256.Sum256(input)
+	out := make([]byte, len(sum))
+	copy(out, sum[:])
+	return out
+}
+
+func generateBuildNonce() ([]byte, bool, error) {
+	if env := strings.TrimSpace(os.Getenv("GARBLE_BUILD_NONCE")); env != "" {
+		env = strings.TrimRight(env, "=")
+		data, err := base64.RawStdEncoding.DecodeString(env)
+		if err != nil {
+			return nil, false, fmt.Errorf("error decoding build nonce: %v", err)
+		}
+		return data, false, nil
+	}
+	buf := make([]byte, 32)
+	if _, err := cryptorand.Read(buf); err != nil {
+		return nil, false, fmt.Errorf("error generating build nonce: %v", err)
+	}
+	return buf, true, nil
 }
 
 func goVersionOK() bool {
@@ -546,16 +586,16 @@ func goVersionOK() bool {
 	sharedCache.GoVersion = rxVersion.FindString(toolchainVersionFull)
 	if sharedCache.GoVersion == "" {
 		// Go 1.15.x and older did not have GOVERSION yet; they are too old anyway.
-		fmt.Fprintf(os.Stderr, "Go version is too old; please upgrade to %s or newer\n", minGoVersion)
+		_, _ = fmt.Fprintf(os.Stderr, "Go version is too old; please upgrade to %s or newer\n", minGoVersion)
 		return false
 	}
 
 	if version.Compare(sharedCache.GoVersion, minGoVersion) < 0 {
-		fmt.Fprintf(os.Stderr, "Go version %q is too old; please upgrade to %s or newer\n", toolchainVersionFull, minGoVersion)
+		_, _ = fmt.Fprintf(os.Stderr, "Go version %q is too old; please upgrade to %s or newer\n", toolchainVersionFull, minGoVersion)
 		return false
 	}
 	if version.Compare(sharedCache.GoVersion, unsupportedGo) >= 0 {
-		fmt.Fprintf(os.Stderr, "Go version %q is too new; Go linker patches aren't available for %s or later yet\n", toolchainVersionFull, unsupportedGo)
+		_, _ = fmt.Fprintf(os.Stderr, "Go version %q is too new; Go linker patches aren't available for %s or later yet\n", toolchainVersionFull, unsupportedGo)
 		return false
 	}
 
@@ -569,7 +609,7 @@ func goVersionOK() bool {
 		return true
 	}
 	if version.Compare(builtVersion, sharedCache.GoVersion) < 0 {
-		fmt.Fprintf(os.Stderr, `
+		_, _ = fmt.Fprintf(os.Stderr, `
 garble was built with %q and can't be used with the newer %q; rebuild it with a command like:
     go install mvdan.cc/garble@latest
 `[1:], builtVersionFull, toolchainVersionFull)
@@ -580,7 +620,7 @@ garble was built with %q and can't be used with the newer %q; rebuild it with a 
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `
+	_, _ = fmt.Fprint(os.Stderr, `
 Garble obfuscates Go code by wrapping the Go toolchain.
 
 	garble [garble flags] command [go flags] [go arguments]
@@ -607,7 +647,7 @@ garble accepts the following flags before a command:
 
 `[1:])
 	flagSet.PrintDefaults()
-	fmt.Fprint(os.Stderr, `
+	_, _ = fmt.Fprint(os.Stderr, `
 
 For more information, see https://github.com/burrowers/garble.
 `[1:])
@@ -721,7 +761,7 @@ func fetchGoEnv() error {
 	).Output()
 	if err != nil {
 		// TODO: cover this in the tests.
-		fmt.Fprintf(os.Stderr, `Can't find the Go toolchain: %v
+		_, _ = fmt.Fprintf(os.Stderr, `Can't find the Go toolchain: %v
 
 This is likely due to Go not being installed/setup correctly.
 
