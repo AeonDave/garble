@@ -122,6 +122,12 @@ func Obfuscate(rand *mathrand.Rand, file *ast.File, info *types.Info, linkString
 
 	newFile := astutil.Apply(file, pre, post).(*ast.File)
 	obfRand.proxyDispatcher.AddToFile(newFile)
+
+	// Insert inline ASCON decrypt function if it was used
+	if obfRand.asconHelper.used {
+		insertAsconInlineCode(newFile, obfRand.asconHelper)
+	}
+
 	return newFile
 }
 

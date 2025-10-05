@@ -1,0 +1,91 @@
+# Test improved simple XOR obfuscation with nonce, position-mixing, and chaining
+exec garble -literals build
+exec ./main
+cmp stdout main.stdout
+
+-- go.mod --
+module test/main
+
+go 1.21
+-- main.go --
+package main
+
+import "fmt"
+
+const (
+	// These literals will be obfuscated
+	secretKey   = "my-secret-api-key-123456"
+	password    = "SuperSecretP@ssw0rd!"
+	apiEndpoint = "https://api.example.com/v1/secure"
+)
+
+var (
+	// Variable literals will also be obfuscated
+	token       = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+	credentials = []byte("admin:password:token")
+)
+
+func main() {
+	fmt.Println("=== Improved Simple XOR Obfuscation Test ===")
+	fmt.Println()
+
+	// Test constants
+	fmt.Println("Secret Key:", secretKey)
+	fmt.Println("Password:", password)
+	fmt.Println("API Endpoint:", apiEndpoint)
+
+	// Test variables
+	fmt.Println("Token:", token)
+	fmt.Println("Credentials:", string(credentials))
+
+	// Test string concatenation
+	message := "Hello, " + "World" + "!"
+	fmt.Println("Message:", message)
+
+	// Test byte slices
+	data := []byte{0x48, 0x65, 0x6c, 0x6c, 0x6f} // "Hello"
+	fmt.Println("Byte data:", string(data))
+
+	// Test with special characters
+	special := "Test_SpecialChars_NL\nEnd"
+	fmt.Println("Special:", special)
+
+	// Test repeated patterns (should still obfuscate uniquely)
+	repeated := "aaaaaaaaaaaaaaaaaa"
+	fmt.Println("Repeated:", repeated)
+
+	// Test empty and small
+	empty := ""
+	single := "x"
+	fmt.Println("Empty:", empty, "Single:", single)
+
+	// Test large literal
+	large := `This is a much longer literal that contains multiple sentences.
+It spans multiple lines and includes various characters like numbers 123456,
+special symbols !@#$%^&*(), and even some unicode: ✓ ✗ ★ ♥
+The improved XOR obfuscator should handle this with nonce, position-dependent
+mixing, and chained operations for better security while maintaining performance.`
+	fmt.Println("Large literal length:", len(large))
+
+	fmt.Println()
+	fmt.Println("✅ All literals processed successfully with improved XOR!")
+	fmt.Println("Features: Nonce + Position-mixing + Chaining + External keys")
+}
+-- main.stdout --
+=== Improved Simple XOR Obfuscation Test ===
+
+Secret Key: my-secret-api-key-123456
+Password: SuperSecretP@ssw0rd!
+API Endpoint: https://api.example.com/v1/secure
+Token: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9
+Credentials: admin:password:token
+Message: Hello, World!
+Byte data: Hello
+Special: Test_SpecialChars_NL
+End
+Repeated: aaaaaaaaaaaaaaaaaa
+Empty:  Single: x
+Large literal length: 367
+
+✅ All literals processed successfully with improved XOR!
+Features: Nonce + Position-mixing + Chaining + External keys

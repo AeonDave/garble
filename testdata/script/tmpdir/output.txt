@@ -1,0 +1,17 @@
+=== Improved Simple XOR Obfuscation Test ===
+
+Secret Key: my-secret-api-key-123456
+Password: SuperSecretP@ssw0rd!
+API Endpoint: https://api.example.com/v1/secure
+Token: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9
+Credentials: admin:password:token
+Message: Hello, World!
+Byte data: Hello
+Special: Test
+	SpecialChars
+Repeated: aaaaaaaaaaaaaaaaaa
+Empty:  Single: x
+Large literal length: 367
+
+Ô£à All literals processed successfully with improved XOR!
+Features: Nonce + Position-mixing + Chaining + External keys

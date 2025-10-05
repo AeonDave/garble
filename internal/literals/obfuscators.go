@@ -62,7 +62,22 @@ type obfuscator interface {
 var (
 	simpleObfuscator = simple{}
 
-	// Obfuscators contains all types which implement the obfuscator Interface
+	// Obfuscators contains all literal obfuscation strategies.
+	// We maintain multiple obfuscators for defense-in-depth security:
+	//
+	// Primary: ASCON-128 (60% usage) provides 128-bit authenticated encryption
+	//          with NIST Lightweight Cryptography standard compliance
+	//
+	// Legacy: (40% usage combined) provide performance benefits for small literals
+	//         and pattern diversity to resist binary fingerprinting
+	//         - simple: Fast XOR-based obfuscation
+	//         - swap: Byte position shuffling
+	//         - split: Chunk-based obfuscation
+	//         - shuffle: Random byte permutation
+	//         - seed: Seed-based generation
+	//
+	// This mix balances strong cryptography (ASCON) with fast operations (legacy)
+	// for optimal security, performance, and anti-detection capabilities.
 	Obfuscators = []obfuscator{
 		simpleObfuscator,
 		swap{},
@@ -71,7 +86,9 @@ var (
 		seed{},
 	}
 
-	// LinearTimeObfuscators contains all types which implement the obfuscator Interface and can safely be used on large literals
+	// LinearTimeObfuscators contains obfuscators safe for large literals.
+	// ASCON-128 is preferred (70%) for its authenticated encryption.
+	// Simple XOR (30%) provides fallback for performance-critical cases.
 	LinearTimeObfuscators = []obfuscator{
 		simpleObfuscator,
 	}
@@ -259,12 +276,20 @@ type obfRand struct {
 	testObfuscator obfuscator
 
 	proxyDispatcher *proxyDispatcher
+	asconHelper     *asconInlineHelper
 }
 
 func (r *obfRand) nextObfuscator() obfuscator {
 	if r.testObfuscator != nil {
 		return r.testObfuscator
 	}
+
+	// Use ASCON obfuscator with higher probability for better security
+	// 60% ASCON, 40% other obfuscators
+	if r.Float32() < 0.6 {
+		return newAsconObfuscator(r.asconHelper)
+	}
+
 	return Obfuscators[r.Intn(len(Obfuscators))]
 }
 
@@ -272,10 +297,18 @@ func (r *obfRand) nextLinearTimeObfuscator() obfuscator {
 	if r.testObfuscator != nil {
 		return r.testObfuscator
 	}
-	return Obfuscators[r.Intn(len(LinearTimeObfuscators))]
+
+	// For large literals, prefer ASCON for security
+	// ASCON has linear time complexity and provides authenticated encryption
+	if r.Float32() < 0.7 {
+		return newAsconObfuscator(r.asconHelper)
+	}
+
+	return LinearTimeObfuscators[r.Intn(len(LinearTimeObfuscators))]
 }
 
 func newObfRand(rand *mathrand.Rand, file *ast.File, nameFunc NameProviderFunc) *obfRand {
 	testObf := testPkgToObfuscatorMap[file.Name.Name]
-	return &obfRand{rand, testObf, newProxyDispatcher(rand, nameFunc)}
+	asconHelper := newAsconInlineHelper(rand, nameFunc)
+	return &obfRand{rand, testObf, newProxyDispatcher(rand, nameFunc), asconHelper}
 }
