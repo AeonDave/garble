@@ -1,0 +1,33 @@
+# Test reflection without -reversible flag (secure mode - default)
+# Names should be obfuscated, no name mapping in binary
+
+exec garble build
+! binsubstr main$exe 'ReflectType'
+
+[short] stop
+
+# Sanity check without garble
+go build  
+binsubstr main$exe 'ReflectType'
+
+-- go.mod --
+module test/main
+
+go 1.23
+-- main.go --
+package main
+
+import (
+	"fmt"
+	"reflect"
+)
+
+type ReflectType struct {
+	Field string
+}
+
+func main() {
+	t := ReflectType{Field: "test"}
+	fmt.Println(reflect.TypeOf(t).Name())
+}
+

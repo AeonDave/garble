@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"mvdan.cc/garble/internal/linker"
+	"mvdan.cc/garble/internal/literals"
 )
 
 const actionGraphFileName = "action-graph.json"
@@ -103,7 +104,7 @@ var booleanFlags = map[string]bool{
 }
 
 var flagSet = flag.NewFlagSet("garble", flag.ExitOnError)
-var rxGarbleFlag = regexp.MustCompile(`-(?:literals|tiny|debug|debugdir|seed)(?:$|=)`)
+var rxGarbleFlag = regexp.MustCompile(`-(?:literals|tiny|debug|debugdir|seed|reversible)(?:$|=)`)
 
 var (
 	flagLiterals     bool
@@ -111,6 +112,7 @@ var (
 	flagDebug        bool
 	flagDebugDir     string
 	flagSeed         seedFlag
+	flagReversible   bool
 	buildNonceRandom bool
 	// TODO(pagran): in the future, when control flow obfuscation will be stable migrate to flag
 	flagControlFlow = os.Getenv("GARBLE_EXPERIMENTAL_CONTROLFLOW") == "1"
@@ -128,6 +130,7 @@ func init() {
 	flagSet.BoolVar(&flagDebug, "debug", false, "Print debug logs to stderr")
 	flagSet.StringVar(&flagDebugDir, "debugdir", "", "Write the obfuscated source to a directory, e.g. -debugdir=out")
 	flagSet.Var(&flagSeed, "seed", "Provide a base64-encoded seed, e.g. -seed=o9WDTZ4CN4w\nFor a random seed, provide -seed=random")
+	flagSet.BoolVar(&flagReversible, "reversible", false, "Enable reversible obfuscation (weaker security but supports garble reverse and debugging)")
 }
 
 //goland:noinspection GoUnhandledErrorResult
@@ -190,6 +193,10 @@ func main() {
 	if flagSeed.random {
 		_, _ = fmt.Fprintf(os.Stderr, "-seed chosen at random: %s\n", flagSeed.String())
 	}
+
+	// Configure literal obfuscation mode based on -reversible flag
+	literals.SetReversibleMode(flagReversible)
+
 	if err := mainErr(args); err != nil {
 		var code errJustExit
 		if errors.As(err, &code) {

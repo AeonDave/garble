@@ -35,6 +35,15 @@ const (
 // NameProviderFunc defines a function type that generates a string based on a random source and a base name.
 type NameProviderFunc func(rand *mathrand.Rand, baseName string) string
 
+// reversibleMode controls whether obfuscation should be reversible.
+// Set by the -reversible flag to enable weaker but reversible obfuscation.
+var reversibleMode bool
+
+// SetReversibleMode sets the obfuscation mode.
+func SetReversibleMode(reversible bool) {
+	reversibleMode = reversible
+}
+
 // Obfuscate replaces literals with obfuscated anonymous functions.
 func Obfuscate(rand *mathrand.Rand, file *ast.File, info *types.Info, linkStrings map[*types.Var]string, nameFunc NameProviderFunc) *ast.File {
 	obfRand := newObfRand(rand, file, nameFunc)

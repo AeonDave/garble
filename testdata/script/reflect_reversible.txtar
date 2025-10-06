@@ -1,0 +1,34 @@
+# Test reflection with -reversible flag (legacy mode for garble reverse)
+# Names still obfuscated, but _originalNames infrastructure present
+
+exec garble -reversible build
+! binsubstr main$exe 'ReflectType'
+binsubstr main$exe 'internal/abi._originalNames'
+
+[short] stop
+
+# Sanity check without garble
+go build
+binsubstr main$exe 'ReflectType'
+
+-- go.mod --
+module test/main
+
+go 1.23
+-- main.go --
+package main
+
+import (
+	"fmt"
+	"reflect"
+)
+
+type ReflectType struct {
+	Field string
+}
+
+func main() {
+	t := ReflectType{Field: "test"}
+	fmt.Println(reflect.TypeOf(t).Name())
+}
+

@@ -22,15 +22,27 @@ var _ obfuscator = simple{}
 // 3. Chained operations with rotation (dependencies between bytes)
 // 4. External key mixing for additional entropy
 //
-// Algorithm:
+// This function routes to either reversible or irreversible implementation
+// based on the -reversible flag setting.
 //
-//	data[i] = ((plaintext[i] XOR key[i]) + nonce) XOR (position_mix) OP external_keys
+// Reversible mode (with -reversible flag):
+//   - Uses symmetric operations (XOR, ADD, SUB)
+//   - Supports garble reverse functionality
+//   - Weaker security but maintains backward compatibility
 //
-// This creates a much stronger cipher than simple XOR while maintaining:
-// - Reversibility (essential for garble reverse compatibility)
-// - Performance (still ~2x faster than ASCON for small literals)
-// - Simplicity (no crypto imports, inline operations)
+// Irreversible mode (default, without -reversible flag):
+//   - Currently uses same algorithm (TODO: implement true irreversible mode)
+//   - Maximum security planned for future (SHA-256, S-box, hash chaining)
+//   - Does not support garble reverse
 func (simple) obfuscate(rand *mathrand.Rand, data []byte, extKeys []*externalKey) *ast.BlockStmt {
+	// TODO: Implement true irreversible mode with hash-based obfuscation
+	// For now, both modes use the same reversible algorithm
+	return obfuscateReversible(rand, data, extKeys)
+}
+
+// obfuscateReversible implements the reversible XOR-based algorithm.
+// This is the original implementation that maintains full reversibility.
+func obfuscateReversible(rand *mathrand.Rand, data []byte, extKeys []*externalKey) *ast.BlockStmt {
 	if len(data) == 0 {
 		return ah.BlockStmt(
 			ah.AssignDefineStmt(ast.NewIdent("data"), ah.DataToByteSlice(data)),
