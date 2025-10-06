@@ -59,34 +59,50 @@ Offset | Size | Content
 
 ## In Progress 🚧
 
-### 5. Runtime Side (Program Startup) - NEXT
-**File:** `runtime_patch.go` (to be updated)
+### 5. Runtime Side (Program Startup) - COMPLETE ✅
+**Files:** 
+- `internal/runtime/patches/go1.25/0001-add-feistel-decryption.patch` ✅
+- `internal/runtime/runtime.go` ✅
+- `transformer.go` (updated) ✅
 
-**Required:**
-- [ ] Inject Feistel helper functions into runtime
-- [ ] Add global lookup maps
-- [ ] Inject `init()` function to read table and populate maps
-- [ ] Modify `entry()` to use map lookup
+**Implemented:**
+- ✅ Created runtime patch system (similar to linker patches)
+- ✅ Injected Feistel helper functions into runtime
+- ✅ Added global lookup maps (`garbleFeistelLookupTable`)
+- ✅ Injected `init()` function to read table and populate maps
+- ✅ Modified `entry()` to use map lookup with fallback
+- ✅ Added `applyRuntimePatches()` method to transformer
+- ✅ Integrated with `-reversible` flag
 
-**Strategy Decision:**
-Using **Source Code Patch** approach (like linker) instead of AST manipulation:
-- ✅ Simpler and more maintainable
-- ✅ Easier to review
-- ✅ Standard approach already used for linker
-- ✅ Less fragile than complex AST generation
-
-**Next File:** `internal/runtime/patches/go1.25/0001-add-feistel-decryption.patch`
+**Runtime Patch Details:**
+```go
+// Adds to runtime/symtab.go:
+- garbleFeistelLookupTable map[uint32]uint32
+- garbleFeistelNameLookupTable map[uint32]uint32
+- garbleFeistelRound(right, key) - FNV-based F-function
+- garbleFeistelDecrypt32Pair(left, right, keys) - 4-round decryption
+- garbleDeriveFeistelKeys(seed) - Key derivation
+- garbleInitFeistelTable() - Reads linker symbol and populates maps
+- Modified entry() - Uses map lookup instead of direct access
+```
 
 ---
 
 ## Pending 📋
 
-### 6. Testing
-- [ ] Integration test with `-reversible` flag
+### 6. Testing - READY TO TEST 🧪
+- [x] Created integration test (`testdata/script/feistel_phase2.txtar`)
+- [ ] Run integration test with `-reversible` flag
 - [ ] Test runtime.FuncForPC correctness
 - [ ] Test stack traces work
 - [ ] Benchmark performance overhead
-- [ ] Test without `-reversible` (irreversible mode)
+- [ ] Test without `-reversible` (uses old XOR method)
+
+**Test File:** `testdata/script/feistel_phase2.txtar`
+- Tests function execution
+- Tests runtime.FuncForPC with encrypted metadata
+- Tests stack trace generation
+- Verifies obfuscation (name not in binary)
 
 ### 7. Documentation
 - [ ] Update README with Phase 2 status

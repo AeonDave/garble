@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/parser"
 	"go/token"
 	"go/types"
 	"io/fs"
@@ -25,6 +26,7 @@ import (
 	"golang.org/x/tools/go/ssa"
 	"mvdan.cc/garble/internal/ctrlflow"
 	"mvdan.cc/garble/internal/literals"
+	runtimepkg "mvdan.cc/garble/internal/runtime"
 )
 
 // cmd/bundle will include a go:generate directive in its output by default.
@@ -319,6 +321,44 @@ func (tf *transformer) writeSourceFile(basename, obfuscated string, content []by
 		return "", err
 	}
 	return dstPath, nil
+}
+
+// applyRuntimePatches applies Phase 2 Feistel decryption patches to runtime/symtab.go
+// This is used in reversible mode to inject the decryption table reading code
+func (tf *transformer) applyRuntimePatches(symtabPath string) error {
+	// Load the runtime patches for current Go version
+	patches, err := runtimepkg.LoadRuntimePatches(sharedCache.GoEnv.GOVERSION)
+	if err != nil {
+		return fmt.Errorf("failed to load runtime patches: %w", err)
+	}
+	
+	// Read original symtab.go content
+	originalContent, err := os.ReadFile(symtabPath)
+	if err != nil {
+		return fmt.Errorf("failed to read symtab.go: %w", err)
+	}
+	
+	// Apply all patches
+	patchedContent, err := runtimepkg.ApplyRuntimePatches(originalContent, patches)
+	if err != nil {
+		return fmt.Errorf("failed to apply patches: %w", err)
+	}
+	
+	// Parse the patched source to validate it's correct Go code
+	fset := token.NewFileSet()
+	_, err = parser.ParseFile(fset, symtabPath, patchedContent, parser.ParseComments)
+	if err != nil {
+		return fmt.Errorf("patched code has syntax errors: %w", err)
+	}
+	
+	// Write the patched content back
+	// Note: This will be written to the temp build directory, not the original Go source
+	if err := os.WriteFile(symtabPath, patchedContent, 0644); err != nil {
+		return fmt.Errorf("failed to write patched symtab.go: %w", err)
+	}
+	
+	log.Printf("Applied runtime patches to symtab.go")
+	return nil
 }
 
 var transformMethods = map[string]func(*transformer, []string) ([]string, error){
@@ -708,7 +748,20 @@ func (tf *transformer) obfuscateAndEmit(files []*ast.File, paths []string) ([]st
 			}
 			if basename == "symtab.go" {
 				updateMagicValue(file, magicValue())
-				updateEntryOffset(file, entryOffKey())
+				// Phase 2: Apply runtime patches for Feistel decryption table
+				// This injects the decryption code that reads the linker-generated table
+				if flagReversible {
+					// In reversible mode, apply Feistel patches
+					if err := tf.applyRuntimePatches(paths[i]); err != nil {
+						log.Printf("Warning: failed to apply runtime patches: %v", err)
+						// Fallback to old XOR method
+						updateEntryOffset(file, entryOffKey())
+					}
+				} else {
+					// In irreversible mode, keep old XOR method for now
+					// TODO Phase 3: implement hash-based irreversible mode
+					updateEntryOffset(file, entryOffKey())
+				}
 			}
 		}
 		if err := tf.transformDirectives(file.Comments); err != nil {

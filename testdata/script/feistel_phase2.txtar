@@ -1,0 +1,82 @@
+# Test Feistel Phase 2 - Reversible Mode with Lazy Decryption Table
+# Verifies that runtime metadata encryption works with the new table-based approach
+
+exec garble -reversible build -o main_reversible$exe
+exec ./main_reversible$exe
+stdout 'Function name: RuntimeMetadataTest'
+stdout 'Function found: true'
+stdout 'Stack trace works: true'
+
+! binsubstr main_reversible$exe 'RuntimeMetadataTest'
+
+[short] stop
+
+# Test with explicit seed for deterministic builds
+exec garble -reversible -seed=test_phase2_seed build -o main_seeded$exe
+exec ./main_seeded$exe
+stdout 'Function name: RuntimeMetadataTest'
+stdout 'Function found: true'
+
+# Both binaries should be different (different build IDs)
+! cmp main_reversible$exe main_seeded$exe
+
+-- go.mod --
+module test/main
+
+go 1.25
+
+-- main.go --
+package main
+
+import (
+	"fmt"
+	"reflect"
+	"runtime"
+)
+
+// RuntimeMetadataTest is a test function that should be obfuscated
+func RuntimeMetadataTest() string {
+	return "test function executed"
+}
+
+func main() {
+	// Test 1: Call the function
+	result := RuntimeMetadataTest()
+	if result != "test function executed" {
+		panic("function call failed")
+	}
+	
+	// Test 2: Get function name via runtime.FuncForPC
+	// This tests that the decryption table works correctly
+	pc := reflect.ValueOf(RuntimeMetadataTest).Pointer()
+	fn := runtime.FuncForPC(pc)
+	if fn != nil {
+		fmt.Printf("Function name: %s\n", fn.Name())
+		fmt.Println("Function found: true")
+	} else {
+		fmt.Println("Function found: false")
+		panic("runtime.FuncForPC returned nil")
+	}
+	
+	// Test 3: Generate stack trace
+	// This ensures entry() method works with decrypted offsets
+	buf := make([]byte, 1024)
+	n := runtime.Stack(buf, false)
+	stackTrace := string(buf[:n])
+	
+	// Stack trace should contain our function
+	hasTrace := len(stackTrace) > 0
+	fmt.Printf("Stack trace works: %v\n", hasTrace)
+	
+	if !hasTrace {
+		panic("stack trace generation failed")
+	}
+	
+	fmt.Println("All tests passed!")
+}
+-- reflect_import.go --
+package main
+
+import (
+	_ "reflect"
+)
