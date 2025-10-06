@@ -26,7 +26,9 @@ import (
 const (
 	MagicValueEnv  = "GARBLE_LINK_MAGIC"
 	TinyEnv        = "GARBLE_LINK_TINY"
-	EntryOffKeyEnv = "GARBLE_LINK_ENTRYOFF_KEY"
+	EntryOffKeyEnv = "GARBLE_LINK_ENTRYOFF_KEY" // Phase 1: XOR encryption (deprecated)
+	FeistelSeedEnv = "GARBLE_LINK_FEISTEL_SEED" // Phase 2: Feistel seed (base64)
+	ReversibleEnv  = "GARBLE_LINK_REVERSIBLE"   // Phase 2: Reversible mode flag
 )
 
 //go:embed patches/*/*.patch

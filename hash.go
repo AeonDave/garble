@@ -264,6 +264,22 @@ func entryOffKey() uint32 {
 	return runtimeHashWithCustomSalt([]byte("entryOffKey"))
 }
 
+// feistelSeed returns a 32-byte seed for Feistel cipher encryption.
+// Used by both linker (encryption) and runtime (decryption).
+// Based on user-specified seed or runtime package's GarbleActionID.
+func feistelSeed() []byte {
+	hasher.Reset()
+	if !flagSeed.present() {
+		// Use runtime package's unique build ID as seed
+		hasher.Write(sharedCache.ListedPackages["runtime"].GarbleActionID[:])
+	} else {
+		// Use user-specified seed for deterministic builds
+		hasher.Write(seedHashInput())
+	}
+	hasher.Write([]byte("feistelSeed"))
+	return hasher.Sum(nil) // Returns 32 bytes (SHA-256)
+}
+
 func hashWithPackage(pkg *listedPackage, name string) string {
 	if !flagSeed.present() {
 		return hashWithCustomSalt(pkg.GarbleActionID[:], name)

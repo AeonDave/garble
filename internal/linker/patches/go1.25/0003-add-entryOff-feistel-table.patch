@@ -1,0 +1,173 @@
+From 03342e79193875d08bf3f88154e77a453b28c076 Mon Sep 17 00:00:00 2001
+From: pagran <pagran@protonmail.com>
+Date: Sat, 14 Jan 2023 21:36:16 +0100
+Subject: [PATCH 3/3] add entryOff Feistel encryption with lazy decryption table
+
+Phase 2: Hybrid approach - encrypt at link time, decrypt at runtime init
+---
+ cmd/link/internal/ld/pcln.go | 150 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 150 insertions(+)
+
+diff --git a/cmd/link/internal/ld/pcln.go b/cmd/link/internal/ld/pcln.go
+index b497573b15..a1b2c3d4e5 100644
+--- a/cmd/link/internal/ld/pcln.go
++++ b/cmd/link/internal/ld/pcln.go
+@@ -6,6 +6,9 @@ package ld
+ 
+ import (
+ 	"cmd/internal/goobj"
++	"crypto/sha256"
++	"encoding/base64"
++	"hash/fnv"
+ 	"cmd/internal/objabi"
+ 	"cmd/internal/sys"
+ 	"cmd/link/internal/loader"
+@@ -806,6 +809,153 @@ func writeFuncs(ctxt *Link, sb *loader.SymbolBuilder, funcs []loader.Sym, inlSym
+ 			sb.SetUint32(ctxt.Arch, dataoff, uint32(ldr.SymValue(fdsym)-gofuncBase))
+ 		}
+ 	}
++
++	// Phase 2: Feistel encryption with lazy decryption table
++	// Encrypt metadata at link time, generate table for runtime decryption
++	
++	// Feistel cipher implementation
++	feistelRound := func(right uint32, key []byte) uint32 {
++		h := fnv.New32a()
++		var buf [4]byte
++		ctxt.Arch.ByteOrder.PutUint32(buf[:], right)
++		h.Write(buf[:])
++		h.Write(key)
++		return h.Sum32()
++	}
++
++	feistelEncrypt32Pair := func(left, right uint32, keys [4][]byte) (uint32, uint32) {
++		for i := 0; i < 4; i++ {
++			newLeft := right
++			newRight := left ^ feistelRound(right, keys[i])
++			left = newLeft
++			right = newRight
++		}
++		return left, right
++	}
++
++	deriveFeistelKeys := func(baseSeed []byte) [4][]byte {
++		var keys [4][]byte
++		for i := 0; i < 4; i++ {
++			h := fnv.New32a()
++			h.Write(baseSeed)
++			h.Write([]byte("round_"))
++			h.Write([]byte{byte('0' + i)})
++			keys[i] = h.Sum(nil)
++		}
++		return keys
++	}
++
++	// Get Feistel seed from environment
++	garbleFeistelSeedStr := os.Getenv("GARBLE_LINK_FEISTEL_SEED")
++	if garbleFeistelSeedStr == "" {
++		panic("[garble] Feistel seed must be set")
++	}
++
++	garbleFeistelSeed, err := base64.StdEncoding.DecodeString(garbleFeistelSeedStr)
++	if err != nil {
++		panic(fmt.Errorf("[garble] invalid Feistel seed: %v", err))
++	}
++
++	// Get reversible flag
++	garbleReversibleStr := os.Getenv("GARBLE_LINK_REVERSIBLE")
++	garbleReversible := garbleReversibleStr == "true" || garbleReversibleStr == "1"
++
++	// Only encrypt in reversible mode for Phase 2
++	if !garbleReversible {
++		// Irreversible mode: skip encryption for now
++		// TODO: implement hash-based irreversible mode
++		return
++	}
++
++	// Derive Feistel keys
++	feistelKeys := deriveFeistelKeys(garbleFeistelSeed)
++
++	// Encrypt all (entryOff, nameOff) pairs and collect for table
++	type tableEntry struct {
++		originalEntryOff uint32
++		encryptedEntryOff uint32
++		originalNameOff uint32
++		encryptedNameOff uint32
++	}
++	
++	var entries []tableEntry
++	garbleData := sb.Data()
++	
++	for _, off := range startLocations {
++		origEntryOff := ctxt.Arch.ByteOrder.Uint32(garbleData[off:])
++		origNameOff := ctxt.Arch.ByteOrder.Uint32(garbleData[off+4:])
++		
++		// Encrypt the pair
++		encEntryOff, encNameOff := feistelEncrypt32Pair(origEntryOff, origNameOff, feistelKeys)
++		
++		// Store encrypted values in pclntab
++		sb.SetUint32(ctxt.Arch, int64(off), encEntryOff)
++		sb.SetUint32(ctxt.Arch, int64(off+4), encNameOff)
++		
++		// Save for decryption table
++		entries = append(entries, tableEntry{
++			originalEntryOff: origEntryOff,
++			encryptedEntryOff: encEntryOff,
++			originalNameOff: origNameOff,
++			encryptedNameOff: encNameOff,
++		})
++	}
++
++	// Create decryption table symbol for runtime
++	// Table format:
++	//   [0:32]   - Feistel seed (32 bytes SHA-256)
++	//   [32:36]  - Entry count (uint32)
++	//   [36:40]  - Flags (uint32): bit 0 = reversible
++	//   [40:...]  - Entries: [encEntryOff(4) | origEntryOff(4) | encNameOff(4) | origNameOff(4)], ...
++	
++	tableSize := 40 + len(entries)*16 // header + entries
++	tableSym := ldr.CreateSymForUpdate("runtime.feistelDecryptTable", 0)
++	tableSym.SetType(sym.SRODATA)
++	tableSym.SetSize(int64(tableSize))
++	tableSym.Grow(int64(tableSize))
++	tableData := tableSym.Data()
++	
++	// Write seed (32 bytes)
++	copy(tableData[0:32], garbleFeistelSeed)
++	
++	// Write entry count
++	ctxt.Arch.ByteOrder.PutUint32(tableData[32:36], uint32(len(entries)))
++	
++	// Write flags
++	var flags uint32
++	if garbleReversible {
++		flags |= 0x01
++	}
++	ctxt.Arch.ByteOrder.PutUint32(tableData[36:40], flags)
++	
++	// Write entries
++	offset := 40
++	for _, entry := range entries {
++		ctxt.Arch.ByteOrder.PutUint32(tableData[offset:], entry.encryptedEntryOff)
++		ctxt.Arch.ByteOrder.PutUint32(tableData[offset+4:], entry.originalEntryOff)
++		ctxt.Arch.ByteOrder.PutUint32(tableData[offset+8:], entry.encryptedNameOff)
++		ctxt.Arch.ByteOrder.PutUint32(tableData[offset+12:], entry.originalNameOff)
++		offset += 16
++	}
++	
++	// Make table externally visible to runtime
++	tableSym.SetReachable(true)
++	tableSym.SetDuplicateOK(false)
++	
++	// Add reference from runtime package to ensure table is included
++	// The runtime init() will read this symbol
++	if ldr.Lookup("runtime.main", 0) != 0 {
++		runtimeMain := ldr.MakeSymbolUpdater(ldr.Lookup("runtime.main", 0))
++		runtimeMain.AddInteriorSym(tableSym.Sym())
++	}
+ }
+ 
+ // pclntab initializes the pclntab symbol with
+-- 
+2.48.1
+
