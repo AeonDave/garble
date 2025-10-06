@@ -258,12 +258,6 @@ func magicValue() uint32 {
 	return runtimeHashWithCustomSalt([]byte("magic"))
 }
 
-// entryOffKey returns random entry offset key
-// on user specified seed or the runtime package's GarbleActionID.
-func entryOffKey() uint32 {
-	return runtimeHashWithCustomSalt([]byte("entryOffKey"))
-}
-
 // feistelSeed returns a 32-byte seed for Feistel cipher encryption.
 // Used by both linker (encryption) and runtime (decryption).
 // Based on user-specified seed or runtime package's GarbleActionID.

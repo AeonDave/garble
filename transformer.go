@@ -331,32 +331,32 @@ func (tf *transformer) applyRuntimePatches(symtabPath string) error {
 	if err != nil {
 		return fmt.Errorf("failed to load runtime patches: %w", err)
 	}
-	
+
 	// Read original symtab.go content
 	originalContent, err := os.ReadFile(symtabPath)
 	if err != nil {
 		return fmt.Errorf("failed to read symtab.go: %w", err)
 	}
-	
+
 	// Apply all patches
 	patchedContent, err := runtimepkg.ApplyRuntimePatches(originalContent, patches)
 	if err != nil {
 		return fmt.Errorf("failed to apply patches: %w", err)
 	}
-	
+
 	// Parse the patched source to validate it's correct Go code
 	fset := token.NewFileSet()
 	_, err = parser.ParseFile(fset, symtabPath, patchedContent, parser.ParseComments)
 	if err != nil {
 		return fmt.Errorf("patched code has syntax errors: %w", err)
 	}
-	
+
 	// Write the patched content back
 	// Note: This will be written to the temp build directory, not the original Go source
 	if err := os.WriteFile(symtabPath, patchedContent, 0644); err != nil {
 		return fmt.Errorf("failed to write patched symtab.go: %w", err)
 	}
-	
+
 	log.Printf("Applied runtime patches to symtab.go")
 	return nil
 }
@@ -748,20 +748,10 @@ func (tf *transformer) obfuscateAndEmit(files []*ast.File, paths []string) ([]st
 			}
 			if basename == "symtab.go" {
 				updateMagicValue(file, magicValue())
-				// Phase 2: Apply runtime patches for Feistel decryption table
-				// This injects the decryption code that reads the linker-generated table
-				if flagReversible {
-					// In reversible mode, apply Feistel patches
-					if err := tf.applyRuntimePatches(paths[i]); err != nil {
-						log.Printf("Warning: failed to apply runtime patches: %v", err)
-						// Fallback to old XOR method
-						updateEntryOffset(file, entryOffKey())
-					}
-				} else {
-					// In irreversible mode, keep old XOR method for now
-					// TODO Phase 3: implement hash-based irreversible mode
-					updateEntryOffset(file, entryOffKey())
-				}
+				seed := feistelSeed()
+				var seedArray [32]byte
+				copy(seedArray[:], seed)
+				updateEntryOffsetFeistel(file, seedArray)
 			}
 		}
 		if err := tf.transformDirectives(file.Comments); err != nil {

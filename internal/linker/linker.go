@@ -26,9 +26,8 @@ import (
 const (
 	MagicValueEnv  = "GARBLE_LINK_MAGIC"
 	TinyEnv        = "GARBLE_LINK_TINY"
-	EntryOffKeyEnv = "GARBLE_LINK_ENTRYOFF_KEY" // Phase 1: XOR encryption (deprecated)
-	FeistelSeedEnv = "GARBLE_LINK_FEISTEL_SEED" // Phase 2: Feistel seed (base64)
-	ReversibleEnv  = "GARBLE_LINK_REVERSIBLE"   // Phase 2: Reversible mode flag
+	FeistelSeedEnv = "LINK_SEED"              // Phase 2: Feistel seed (base64)
+	ReversibleEnv  = "GARBLE_LINK_REVERSIBLE" // Phase 2: Reversible mode flag
 )
 
 //go:embed patches/*/*.patch
@@ -79,13 +78,17 @@ func copyFile(src, target string) error {
 	if err != nil {
 		return err
 	}
-	defer srcFile.Close()
+	defer func(srcFile *os.File) {
+		_ = srcFile.Close()
+	}(srcFile)
 
 	targetFile, err := os.Create(target)
 	if err != nil {
 		return err
 	}
-	defer targetFile.Close()
+	defer func(targetFile *os.File) {
+		_ = targetFile.Close()
+	}(targetFile)
 	_, err = io.Copy(targetFile, srcFile)
 	return err
 }
@@ -166,7 +169,7 @@ const versionExt = ".version"
 
 func checkVersion(linkerPath, goVersion, patchesVer string) (bool, error) {
 	versionPath := linkerPath + versionExt
-	version, err := os.ReadFile(versionPath)
+	vv, err := os.ReadFile(versionPath)
 	if os.IsNotExist(err) {
 		return false, nil
 	}
@@ -174,7 +177,7 @@ func checkVersion(linkerPath, goVersion, patchesVer string) (bool, error) {
 		return false, err
 	}
 
-	return string(version) == getCurrentVersion(goVersion, patchesVer), nil
+	return string(vv) == getCurrentVersion(goVersion, patchesVer), nil
 }
 
 func writeVersion(linkerPath, goVersion, patchesVer string) error {

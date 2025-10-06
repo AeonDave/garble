@@ -60,26 +60,15 @@ func updateMagicValue(file *ast.File, magicValue uint32) {
 	}
 }
 
-// updateEntryOffset adds xor encryption for funcInfo.entryoff
-// Encryption algorithm contains 1 xor and 1 multiply operations and is not cryptographically strong.
-// Its goal, without slowing down program performance (reflection, stacktrace),
-// is to make it difficult to determine relations between function metadata and function itself in a binary file.
-// Difficulty of decryption is based on the difficulty of finding a small (probably inlined) entry() function without obvious patterns.
-func updateEntryOffset(file *ast.File, entryOffKey uint32) {
-	// Note that this field could be renamed in future Go versions.
+// updateEntryOffsetFeistel injects Feistel decryption into runtime.funcInfo.entry()
+// This is used in Phase 2 reversible mode for stronger encryption than XOR
+func updateEntryOffsetFeistel(file *ast.File, seed [32]byte) {
 	const nameOffField = "nameOff"
 	entryOffUpdated := false
 
-	// During linker stage we encrypt funcInfo.entryoff using a random number and funcInfo.nameOff,
-	// for correct program functioning we must decrypt funcInfo.entryoff at any access to it.
-	// In runtime package all references to funcInfo.entryOff are made through one method entry():
-	// func (f funcInfo) entry() uintptr {
-	//	return f.datap.textAddr(f.entryoff)
-	// }
-	// It is enough to inject decryption into entry() method for program to start working transparently with encrypted value of funcInfo.entryOff:
-	// func (f funcInfo) entry() uintptr {
-	//	return f.datap.textAddr(f.entryoff ^ (uint32(f.nameOff) * <random int>))
-	// }
+	keys := feistelKeysFromSeed(seed)
+	addFeistelSupportDecls(file, keys)
+
 	updateEntryOff := func(node ast.Node) bool {
 		callExpr, ok := node.(*ast.CallExpr)
 		if !ok {
@@ -96,21 +85,11 @@ func updateEntryOffset(file *ast.File, entryOffKey uint32) {
 			return true
 		}
 
-		callExpr.Args[0] = &ast.BinaryExpr{
-			X:  selExpr,
-			Op: token.XOR,
-			Y: &ast.ParenExpr{X: &ast.BinaryExpr{
-				X: ah.CallExpr(ast.NewIdent("uint32"), &ast.SelectorExpr{
-					X:   selExpr.X,
-					Sel: ast.NewIdent(nameOffField),
-				}),
-				Op: token.MUL,
-				Y: &ast.BasicLit{
-					Kind:  token.INT,
-					Value: strconv.FormatUint(uint64(entryOffKey), 10),
-				},
-			}},
-		}
+		callExpr.Args[0] = ah.CallExpr(ast.NewIdent("linkFeistelDecrypt"),
+			selExpr,
+			ah.CallExpr(ast.NewIdent("uint32"), &ast.SelectorExpr{X: selExpr.X, Sel: ast.NewIdent(nameOffField)}),
+		)
+
 		entryOffUpdated = true
 		return false
 	}
@@ -133,6 +112,211 @@ func updateEntryOffset(file *ast.File, entryOffKey uint32) {
 	ast.Inspect(entryFunc, updateEntryOff)
 	if !entryOffUpdated {
 		panic("entryOff not found")
+	}
+}
+
+func addFeistelSupportDecls(file *ast.File, keys [feistelRounds]uint32) {
+	for _, decl := range file.Decls {
+		genDecl, ok := decl.(*ast.GenDecl)
+		if !ok || genDecl.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range genDecl.Specs {
+			valueSpec, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for _, name := range valueSpec.Names {
+				if name.Name == "linkFeistelKeys" {
+					return
+				}
+			}
+		}
+	}
+
+	file.Decls = append(file.Decls, makeFeistelKeysDecl(keys), makeFeistelRoundDecl(), makeFeistelDecryptDecl())
+}
+
+func makeFeistelKeysDecl(keys [feistelRounds]uint32) ast.Decl {
+	elts := make([]ast.Expr, len(keys))
+	for i, key := range keys {
+		elts[i] = &ast.BasicLit{Kind: token.INT, Value: strconv.FormatUint(uint64(key), 10)}
+	}
+
+	return &ast.GenDecl{
+		Tok: token.VAR,
+		Specs: []ast.Spec{
+			&ast.ValueSpec{
+				Names: []*ast.Ident{ast.NewIdent("linkFeistelKeys")},
+				Values: []ast.Expr{
+					&ast.CompositeLit{
+						Type: &ast.ArrayType{
+							Len: &ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(len(keys))},
+							Elt: ast.NewIdent("uint32"),
+						},
+						Elts: elts,
+					},
+				},
+			},
+		},
+	}
+}
+
+func makeFeistelRoundDecl() ast.Decl {
+	return &ast.FuncDecl{
+		Name: ast.NewIdent("linkFeistelRound"),
+		Type: &ast.FuncType{
+			Params: &ast.FieldList{List: []*ast.Field{
+				{Names: []*ast.Ident{ast.NewIdent("right")}, Type: ast.NewIdent("uint16")},
+				{Names: []*ast.Ident{ast.NewIdent("tweak")}, Type: ast.NewIdent("uint32")},
+				{Names: []*ast.Ident{ast.NewIdent("key")}, Type: ast.NewIdent("uint32")},
+			}},
+			Results: &ast.FieldList{List: []*ast.Field{{Type: ast.NewIdent("uint16")}}},
+		},
+		Body: ah.BlockStmt(
+			&ast.AssignStmt{
+				Lhs: []ast.Expr{ast.NewIdent("x")},
+				Tok: token.DEFINE,
+				Rhs: []ast.Expr{ah.CallExpr(ast.NewIdent("uint32"), ast.NewIdent("right"))},
+			},
+			&ast.AssignStmt{
+				Lhs: []ast.Expr{ast.NewIdent("x")},
+				Tok: token.ASSIGN,
+				Rhs: []ast.Expr{&ast.BinaryExpr{X: ast.NewIdent("x"), Op: token.XOR, Y: ast.NewIdent("tweak")}},
+			},
+			&ast.AssignStmt{
+				Lhs: []ast.Expr{ast.NewIdent("x")},
+				Tok: token.ASSIGN,
+				Rhs: []ast.Expr{&ast.BinaryExpr{X: ast.NewIdent("x"), Op: token.XOR, Y: ast.NewIdent("key")}},
+			},
+			&ast.AssignStmt{
+				Lhs: []ast.Expr{ast.NewIdent("x")},
+				Tok: token.ASSIGN,
+				Rhs: []ast.Expr{&ast.BinaryExpr{
+					X: &ast.BinaryExpr{
+						X:  ast.NewIdent("x"),
+						Op: token.MUL,
+						Y:  &ast.BasicLit{Kind: token.INT, Value: "2654435761"},
+					},
+					Op: token.ADD,
+					Y:  &ast.BasicLit{Kind: token.INT, Value: "2139062149"},
+				}},
+			},
+			&ast.AssignStmt{
+				Lhs: []ast.Expr{ast.NewIdent("shift")},
+				Tok: token.DEFINE,
+				Rhs: []ast.Expr{
+					ah.CallExpr(
+						ast.NewIdent("uint"),
+						&ast.BinaryExpr{
+							X:  &ast.BinaryExpr{X: ast.NewIdent("key"), Op: token.SHR, Y: ah.IntLit(27)},
+							Op: token.OR,
+							Y:  ah.IntLit(1),
+						},
+					),
+				},
+			},
+			&ast.AssignStmt{
+				Lhs: []ast.Expr{ast.NewIdent("shift")},
+				Tok: token.ASSIGN,
+				Rhs: []ast.Expr{
+					&ast.BinaryExpr{X: ast.NewIdent("shift"), Op: token.AND, Y: ah.IntLit(31)},
+				},
+			},
+			&ast.AssignStmt{
+				Lhs: []ast.Expr{ast.NewIdent("x")},
+				Tok: token.ASSIGN,
+				Rhs: []ast.Expr{
+					&ast.BinaryExpr{
+						X:  &ast.BinaryExpr{X: ast.NewIdent("x"), Op: token.SHL, Y: ast.NewIdent("shift")},
+						Op: token.OR,
+						Y: &ast.BinaryExpr{
+							X:  ast.NewIdent("x"),
+							Op: token.SHR,
+							Y:  &ast.BinaryExpr{X: ah.IntLit(32), Op: token.SUB, Y: ast.NewIdent("shift")},
+						},
+					},
+				},
+			},
+			&ast.AssignStmt{
+				Lhs: []ast.Expr{ast.NewIdent("x")},
+				Tok: token.ASSIGN,
+				Rhs: []ast.Expr{&ast.BinaryExpr{X: ast.NewIdent("x"), Op: token.XOR, Y: &ast.BinaryExpr{X: ast.NewIdent("x"), Op: token.SHR, Y: ah.IntLit(16)}}},
+			},
+			ah.ReturnStmt(ah.CallExpr(ast.NewIdent("uint16"), &ast.BinaryExpr{X: ast.NewIdent("x"), Op: token.XOR, Y: &ast.BinaryExpr{X: ast.NewIdent("key"), Op: token.SHR, Y: ah.IntLit(16)}})),
+		),
+	}
+}
+
+func makeFeistelDecryptDecl() ast.Decl {
+	return &ast.FuncDecl{
+		Name: ast.NewIdent("linkFeistelDecrypt"),
+		Type: &ast.FuncType{
+			Params: &ast.FieldList{List: []*ast.Field{
+				{Names: []*ast.Ident{ast.NewIdent("value")}, Type: ast.NewIdent("uint32")},
+				{Names: []*ast.Ident{ast.NewIdent("tweak")}, Type: ast.NewIdent("uint32")},
+			}},
+			Results: &ast.FieldList{List: []*ast.Field{{Type: ast.NewIdent("uint32")}}},
+		},
+		Body: ah.BlockStmt(
+			&ast.IfStmt{
+				Cond: &ast.BinaryExpr{
+					X:  ast.NewIdent("value"),
+					Op: token.EQL,
+					Y: &ast.UnaryExpr{
+						Op: token.XOR,
+						X:  ah.CallExpr(ast.NewIdent("uint32"), ah.IntLit(0)),
+					},
+				},
+				Body: ah.BlockStmt(
+					ah.ReturnStmt(ast.NewIdent("value")),
+				),
+			},
+			&ast.AssignStmt{
+				Lhs: []ast.Expr{ast.NewIdent("left")},
+				Tok: token.DEFINE,
+				Rhs: []ast.Expr{ah.CallExpr(ast.NewIdent("uint16"), &ast.BinaryExpr{X: ast.NewIdent("value"), Op: token.SHR, Y: ah.IntLit(16)})},
+			},
+			&ast.AssignStmt{
+				Lhs: []ast.Expr{ast.NewIdent("right")},
+				Tok: token.DEFINE,
+				Rhs: []ast.Expr{ah.CallExpr(ast.NewIdent("uint16"), &ast.BinaryExpr{X: ast.NewIdent("value"), Op: token.AND, Y: &ast.BasicLit{Kind: token.INT, Value: "65535"}})},
+			},
+			&ast.ForStmt{
+				Init: &ast.AssignStmt{
+					Lhs: []ast.Expr{ast.NewIdent("round")},
+					Tok: token.DEFINE,
+					Rhs: []ast.Expr{&ast.BinaryExpr{X: ah.CallExpr(ast.NewIdent("len"), ast.NewIdent("linkFeistelKeys")), Op: token.SUB, Y: ah.IntLit(1)}},
+				},
+				Cond: &ast.BinaryExpr{X: ast.NewIdent("round"), Op: token.GEQ, Y: ah.IntLit(0)},
+				Post: &ast.AssignStmt{Lhs: []ast.Expr{ast.NewIdent("round")}, Tok: token.ASSIGN, Rhs: []ast.Expr{&ast.BinaryExpr{X: ast.NewIdent("round"), Op: token.SUB, Y: ah.IntLit(1)}}},
+				Body: ah.BlockStmt(
+					&ast.AssignStmt{
+						Lhs: []ast.Expr{ast.NewIdent("key")},
+						Tok: token.DEFINE,
+						Rhs: []ast.Expr{ah.IndexExpr("linkFeistelKeys", ast.NewIdent("round"))},
+					},
+					&ast.AssignStmt{
+						Lhs: []ast.Expr{ast.NewIdent("f")},
+						Tok: token.DEFINE,
+						Rhs: []ast.Expr{ah.CallExpr(ast.NewIdent("linkFeistelRound"), ast.NewIdent("left"), ast.NewIdent("tweak"), ast.NewIdent("key"))},
+					},
+					&ast.AssignStmt{
+						Lhs: []ast.Expr{ast.NewIdent("left"), ast.NewIdent("right")},
+						Tok: token.ASSIGN,
+						Rhs: []ast.Expr{
+							&ast.BinaryExpr{X: ast.NewIdent("right"), Op: token.XOR, Y: ast.NewIdent("f")},
+							ast.NewIdent("left"),
+						},
+					},
+				),
+			},
+			ah.ReturnStmt(&ast.BinaryExpr{
+				X:  &ast.BinaryExpr{X: ah.CallExpr(ast.NewIdent("uint32"), ast.NewIdent("left")), Op: token.SHL, Y: ah.IntLit(16)},
+				Op: token.OR,
+				Y:  ah.CallExpr(ast.NewIdent("uint32"), ast.NewIdent("right")),
+			}),
+		),
 	}
 }
 
