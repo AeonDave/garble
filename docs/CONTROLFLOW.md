@@ -1,13 +1,17 @@
 # Control Flow Obfuscation
 
-> **This feature is experimental**. To enable it, set the environment variable `GARBLE_EXPERIMENTAL_CONTROLFLOW=1`
+Control flow obfuscation is an opt-in hardening layer. Enable it explicitly via the `-controlflow` flag (for example `garble -controlflow=auto build`) or set the `GARBLE_CONTROLFLOW` environment variable in your build environment.
 
 ### Mechanism
 
 
 Control flow obfuscation works in several stages:
 
-1) Collect functions with `//garble:controlflow` comment
+1) Collect candidate functions based on the chosen scope:
+	- `off` (default) disables the transform entirely
+	- `auto` obfuscates every function with a body unless it is tagged with `//garble:nocontrolflow`
+	- `directives` only obfuscates functions annotated with `//garble:controlflow`
+	- `all` forces every function with a body to be obfuscated; the skip directive still takes precedence
 2) Converts [go/ast](https://pkg.go.dev/go/ast) representation to [go/ssa](https://pkg.go.dev/golang.org/x/tools/go/ssa)
 3) Applies [block splitting](#block-splitting)
 4) Generates [junk jumps](#junk-jumps)
@@ -17,6 +21,16 @@ Control flow obfuscation works in several stages:
 8) Converts go/ssa back into go/ast
 
 ### Example usage
+
+```shell
+garble -controlflow=auto build ./...
+```
+
+```go
+// Skip auto mode for performance critical helpers
+//garble:nocontrolflow
+func fastPath() {}
+```
 
 ```go
 // Obfuscate with defaults parameters

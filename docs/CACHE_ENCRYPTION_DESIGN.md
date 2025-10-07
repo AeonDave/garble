@@ -285,8 +285,9 @@ var (
     flagSeed         seedFlag
     flagReversible   bool
     buildNonceRandom bool
-    flagControlFlow  = os.Getenv("GARBLE_EXPERIMENTAL_CONTROLFLOW") == "1"
     flagCacheEncrypt = true  // DEFAULT ON for security
+    flagControlFlowMode   = ctrlflow.ModeOff
+    controlFlowFlagValue  = controlFlowFlag{mode: ctrlflow.ModeOff}
 )
 
 func init() {
@@ -498,8 +499,9 @@ var (
     flagSeed         seedFlag
     flagReversible   bool
     buildNonceRandom bool
-    flagControlFlow  = os.Getenv("GARBLE_EXPERIMENTAL_CONTROLFLOW") == "1"
     flagCacheEncrypt = true  // NEW: Default ON
+    flagControlFlowMode   = ctrlflow.ModeOff
+    controlFlowFlagValue  = controlFlowFlag{mode: ctrlflow.ModeOff}
 )
 
 func init() {

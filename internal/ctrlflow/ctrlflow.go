@@ -18,9 +18,10 @@ import (
 )
 
 const (
-	mergedFileName = "GARBLE_controlflow.go"
-	directiveName  = "//garble:controlflow"
-	importPrefix   = "___garble_import"
+	mergedFileName    = "GARBLE_controlflow.go"
+	directiveName     = "//garble:controlflow"
+	skipDirectiveName = "//garble:nocontrolflow"
+	importPrefix      = "___garble_import"
 
 	defaultBlockSplits   = 0
 	defaultJunkJumps     = 0
@@ -95,6 +96,56 @@ func parseDirective(directive string) (directiveParamMap, bool) {
 	return m, true
 }
 
+func extractControlFlowIntent(doc *ast.CommentGroup) (directiveParamMap, bool, bool) {
+	if doc == nil {
+		return nil, false, false
+	}
+
+	var (
+		params       directiveParamMap
+		hasDirective bool
+	)
+
+	for _, comment := range doc.List {
+		if strings.HasPrefix(comment.Text, skipDirectiveName) {
+			return nil, false, true
+		}
+		if !hasDirective {
+			if parsed, ok := parseDirective(comment.Text); ok {
+				params = parsed
+				hasDirective = true
+			}
+		}
+	}
+
+	return params, hasDirective, false
+}
+
+func eligibleForAuto(funcDecl *ast.FuncDecl) bool {
+	if funcDecl.Body == nil {
+		return false
+	}
+	if len(funcDecl.Body.List) == 0 {
+		return false
+	}
+	return true
+}
+
+func shouldObfuscate(mode Mode, funcDecl *ast.FuncDecl, hasDirective bool) bool {
+	switch mode {
+	case ModeOff:
+		return false
+	case ModeAnnotated:
+		return hasDirective
+	case ModeAuto:
+		return hasDirective || eligibleForAuto(funcDecl)
+	case ModeAll:
+		return true
+	default:
+		return false
+	}
+}
+
 // Obfuscate obfuscates control flow of all functions with directive using control flattening.
 // All obfuscated functions are removed from the original file and moved to the new one.
 // Obfuscation can be customized by passing parameters from the directive, example:
@@ -107,7 +158,11 @@ func parseDirective(directive string) (directiveParamMap, bool) {
 // block_splits - controls number of times largest block must be splitted. Together with flattening improves obfuscation of long blocks without branches.
 //
 //goland:noinspection GoUnhandledErrorResult
-func Obfuscate(fset *token.FileSet, ssaPkg *ssa.Package, files []*ast.File, obfRand *mathrand.Rand) (newFileName string, newFile *ast.File, affectedFiles []*ast.File, err error) {
+func Obfuscate(fset *token.FileSet, ssaPkg *ssa.Package, files []*ast.File, obfRand *mathrand.Rand, mode Mode) (newFileName string, newFile *ast.File, affectedFiles []*ast.File, err error) {
+	if !mode.Enabled() {
+		return
+	}
+
 	var ssaFuncs []*ssa.Function
 	var ssaParams []directiveParamMap
 
@@ -115,35 +170,38 @@ func Obfuscate(fset *token.FileSet, ssaPkg *ssa.Package, files []*ast.File, obfR
 		affected := false
 		for _, decl := range file.Decls {
 			funcDecl, ok := decl.(*ast.FuncDecl)
-			if !ok || funcDecl.Doc == nil {
+			if !ok {
+				continue
+			}
+			if funcDecl.Body == nil {
 				continue
 			}
 
-			for _, comment := range funcDecl.Doc.List {
-				params, hasDirective := parseDirective(comment.Text)
-				if !hasDirective {
-					continue
-				}
-
-				path, _ := astutil.PathEnclosingInterval(file, funcDecl.Pos(), funcDecl.Pos())
-				ssaFunc := ssa.EnclosingFunction(ssaPkg, path)
-				if ssaFunc == nil {
-					panic("function exists in ast but not found in ssa")
-				}
-
-				ssaFuncs = append(ssaFuncs, ssaFunc)
-				ssaParams = append(ssaParams, params)
-
-				// Remove inplace function from original file
-				// TODO: implement a complete function removal
-				funcDecl.Name = ast.NewIdent("_")
-				funcDecl.Body = ah.BlockStmt()
-				funcDecl.Recv = nil
-				funcDecl.Type = &ast.FuncType{Params: &ast.FieldList{}}
-				affected = true
-
-				break
+			params, hasDirective, skip := extractControlFlowIntent(funcDecl.Doc)
+			if skip || !shouldObfuscate(mode, funcDecl, hasDirective) {
+				continue
 			}
+
+			path, _ := astutil.PathEnclosingInterval(file, funcDecl.Pos(), funcDecl.Pos())
+			ssaFunc := ssa.EnclosingFunction(ssaPkg, path)
+			if ssaFunc == nil {
+				fmt.Fprintf(os.Stderr, "garble: controlflow skipped %s: SSA function not found\n", funcDecl.Name.Name)
+				continue
+			}
+
+			if params == nil {
+				params = make(directiveParamMap)
+			}
+			ssaFuncs = append(ssaFuncs, ssaFunc)
+			ssaParams = append(ssaParams, params)
+
+			// Remove inplace function from original file
+			// TODO: implement a complete function removal
+			funcDecl.Name = ast.NewIdent("_")
+			funcDecl.Body = ah.BlockStmt()
+			funcDecl.Recv = nil
+			funcDecl.Type = &ast.FuncType{Params: &ast.FieldList{}}
+			affected = true
 		}
 
 		if affected {

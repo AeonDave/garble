@@ -1152,30 +1152,21 @@ Injected declarations bake the derived keys and the decryption routine into the 
 
 ---
 
-### 6. ⏳ Default Control-Flow Coverage (NOT STARTED)
+### 6. 🟡 Control-Flow Coverage (PARTIAL)
 
-**Vulnerability**: Control-flow rewriting applies only to functions with `//garble:controlflow` annotation. Large swathes of code remain untouched (`internal/ctrlflow/ctrlflow.go:121`). Recent hygiene removed build-time debug logging from the control-flow collector, preventing annotated function names from leaking through standard output.
+**Current State**: `-controlflow` flag (and matching `GARBLE_CONTROLFLOW` env) now drives scope selection (`off`/`directives`/`auto`/`all`). Auto mode obfuscates all functions with bodies while respecting `//garble:nocontrolflow`, and new test coverage (`ctrlflow_auto.txtar`) exercises default-off behaviour alongside CLI/env activation.
 
-**Planned Fix** (Roadmap Item #5):
-```go
-// Add -controlflow flag to enable by default
-if cfg.ControlFlowEnabled {
-    for _, fn := range pkg.Functions {
-        if !isExcluded(fn) && isEligible(fn) {
-            obfuscateControlFlow(fn, cfg.CFLevel)
-        }
-    }
-}
-```
+**Evidence**:
+- `main.go`: Flag wiring, seed hashing updates, and mode resolver.
+- `internal/ctrlflow/ctrlflow.go`: Mode-aware eligibility, skip directive, and SSA safety checks.
+- `docs/CONTROLFLOW.md`: User-facing guidance for modes, defaults, and opt-outs.
 
 **Remaining Work**:
-- ⏳ Implement `-controlflow` flag (default: auto on eligible functions)
-- ⏳ Create exclusion list for performance-critical paths
-- ⏳ Integrate junk blocks and flattening automatically
-- ⏳ Randomize dispatcher layouts per build
-- ⏳ Add opaque predicates tied to runtime state
+- ⏳ Performance benchmarking + heuristics for hot-path exclusion.
+- ⏳ Optional trash/hardening presets tuned per mode.
+- ⏳ Stabilize for default-on consideration (telemetry + rollout guidance).
 
-**Completion**: 0% (design phase)
+**Completion**: 60% (flag delivered; optimization/rollout pending)
 
 ---
 
@@ -1487,16 +1478,6 @@ $ go test -fuzz=FuzzControlFlow ./internal/ctrlflow
 
 ---
 
-## 📞 Security Contact
-
-For security vulnerabilities, please report via:
-- **GitHub Security Advisories**: [github.com/mvdan/garble/security/advisories](https://github.com/mvdan/garble/security/advisories)
-- **Email**: security@garble.dev (if available)
-
-**Please do not disclose vulnerabilities publicly until a fix is available.**
-
----
-
 **Document Version**: 1.1  
 **Next Review**: November 2025  
 **Maintainer**: Garble Security Team
@@ -1517,7 +1498,7 @@ This section tracks the systematic security audit against the comprehensive Weak
 | 2 | Literal Coverage Gaps | ⚠️ **PARTIAL** | MEDIUM | Short strings fixed; const expressions & ldflags remain |
 | 3 | Reflection Backdoors | ✅ **FIXED** | - | flagReversible default=OFF |
 | 4 | Runtime Metadata | ✅ **IMPLEMENTED** | - | Feistel cipher with nosplit |
-| 5 | Control-Flow Scope | 🔴 **LIMITED** | MEDIUM | Requires annotation per function |
+| 5 | Control-Flow Scope | � **PARTIAL** | MEDIUM | Auto mode ships with skip directive; still opt-in |
 | 6 | Cache Side Channels | ✅ **MITIGATED** | - | ASCON-128 encrypted pkg cache |
 | 7 | Export Methods | 🔴 **BY DESIGN** | LOW | Intentional for compatibility |
 | 8 | Error Messages | 🔴 **PARTIAL** | LOW | Debug strings leak semantics |
@@ -1702,55 +1683,62 @@ func (f funcInfo) entry() uintptr {
 
 ---
 
-### 🔴 Category 5: Control-Flow Obfuscation (LIMITED SCOPE)
+### � Category 5: Control-Flow Obfuscation (PARTIAL COVERAGE)
 
 **Original Vulnerability**: CF obfuscation requires manual annotation per function, not applied by default.
 
-**Status**: 🔴 **LIMITED DEPLOYMENT**
+**Status**: � **PARTIAL**
 
 **Evidence**:
-- `main.go` line 118: `flagControlFlow = os.Getenv("GARBLE_EXPERIMENTAL_CONTROLFLOW") == "1"`
-- `docs/CONTROLFLOW.md`: Explicitly marked "experimental"
-- `internal/ctrlflow/ctrlflow.go`: Requires `//garble:controlflow` per function
+- `main.go`: Enables `-controlflow` flag and `resolveControlFlowMode()` to map CLI/env (`GARBLE_CONTROLFLOW`) into a shared `ctrlflow.Mode`.
+- `docs/CONTROLFLOW.md`: Updated guidance for off/auto/directives/all modes and `//garble:nocontrolflow` override.
+- `internal/ctrlflow/ctrlflow.go`: `ModeAuto` obfuscates every function with a body unless explicitly skipped.
 
 **Code References**:
 ```go
-// main.go - Experimental opt-in
-flagControlFlow = os.Getenv("GARBLE_EXPERIMENTAL_CONTROLFLOW") == "1"
+// main.go - CLI wiring
+flagSet.Var(&controlFlowFlagValue, "controlflow", "...")
+if value := os.Getenv("GARBLE_CONTROLFLOW"); value != "" {
+    mode, err := ctrlflow.ParseMode(value)
+    flagControlFlowMode = mode
+}
 
-// ctrlflow.go - Annotation required
-func Transform(files []*ast.File) {
-    for _, file := range files {
-        for _, decl := range file.Decls {
-            // Only processes functions with //garble:controlflow
-            if hasControlFlowDirective(decl) {
-                obfuscateControlFlow(decl)
-            }
-        }
+// ctrlflow.go - Automatic coverage with opt-out
+func shouldObfuscate(mode Mode, fn *ast.FuncDecl, hasDirective bool) bool {
+    switch mode {
+    case ModeAuto:
+        return hasDirective || eligibleForAuto(fn)
+    case ModeAnnotated:
+        return hasDirective
+    case ModeAll:
+        return true
     }
+}
+if skip || !shouldObfuscate(...) {
+    continue // respects //garble:nocontrolflow
 }
 ```
 
 **Gaps Identified**:
-1. **Not Default**: Requires `GARBLE_EXPERIMENTAL_CONTROLFLOW=1` environment variable
-2. **Manual Annotation**: Each function needs `//garble:controlflow` comment
-3. **Experimental Status**: Not production-ready, lacks stability guarantees
+1. **Still Opt-In**: Default mode remains `off`; users must pass `-controlflow` or set env per build.
+2. **Performance Profiling**: Auto mode may penalize hot paths; no built-in heuristics beyond manual `//garble:nocontrolflow`.
+3. **Stability Label**: Needs broader benchmarking and rollout guidance before default-on.
 
 **Attack Surface**:
-- ⚠️ **Static analysis**: Unannotated functions have transparent control flow
-- ⚠️ **Reverse engineering**: Easy to identify critical paths
+- ⚠️ **Static analysis**: Unprotected when flag omitted entirely.
+- ⚠️ **Reverse engineering**: Manual opt-out (`//garble:nocontrolflow`) must be curated carefully.
 
 **Recommended Fixes**:
-1. Make CF obfuscation default-on with exclusion list
-2. Add `-controlflow` flag with levels (off/light/aggressive)
-3. Auto-apply to non-performance-critical functions
+1. Consider enabling auto mode by default once perf numbers are solid.
+2. Ship curated exclusion profiles or heuristics (e.g., small leaf functions, runtime hot paths).
+3. Graduate feature from experimental with benchmarking + docs update.
 
 **Priority**: 🟡 **MEDIUM** (defense in depth, not critical)
 
 **Remaining Work**:
-- ⏳ Implement `-controlflow` flag with auto-detection
-- ⏳ Create performance-critical function exclusion list
-- ⏳ Stabilize experimental status → production ready
+- ⏳ Gather performance data to justify default-on rollout.
+- ⏳ Finalize exclusion heuristics and ship migration guide.
+- ⏳ Publish migration checklist for teams enabling control-flow obfuscation.
 
 ---
 
@@ -1996,16 +1984,14 @@ $ garble -literals build main.go && strings main | grep "VERSION"
 # Still finds const VERSION = "1.0" ⚠️
 
 # Control-flow (Category 5)
-$ GARBLE_EXPERIMENTAL_CONTROLFLOW=1 garble build main.go
-# Requires env var + annotation 🔴
+$ garble -controlflow=auto build main.go
+# Opt-in flag obfuscates all functions; //garble:nocontrolflow opt-out �
 ```
 
 ---
 
 ### 📚 Audit References
 
-- **Weakness Analysis Document**: `c:\Users\novad\Desktop\Weakness Analysis.md`
-- **Control-Flow Documentation**: `docs/CONTROLFLOW.md`
 - **Test Suite**: `testdata/script/*.txtar`
 - **Implementation Files**:
   - `hash.go` (hashing)
@@ -2019,6 +2005,6 @@ $ GARBLE_EXPERIMENTAL_CONTROLFLOW=1 garble build main.go
 ---
 
 **Audit Date**: October 7, 2025  
-**Auditor**: Security Team  
+**Auditor**: x430n Security Team  
 **Next Audit**: November 2025 (post-cache encryption)
 

@@ -30,6 +30,7 @@ import (
 	"strings"
 	"time"
 
+	"mvdan.cc/garble/internal/ctrlflow"
 	"mvdan.cc/garble/internal/linker"
 	"mvdan.cc/garble/internal/literals"
 )
@@ -104,19 +105,19 @@ var booleanFlags = map[string]bool{
 }
 
 var flagSet = flag.NewFlagSet("garble", flag.ExitOnError)
-var rxGarbleFlag = regexp.MustCompile(`-(?:literals|tiny|debug|debugdir|seed|reversible)(?:$|=)`)
+var rxGarbleFlag = regexp.MustCompile(`-(?:literals|tiny|debug|debugdir|seed|reversible|controlflow)(?:$|=)`)
 
 var (
-	flagLiterals     bool
-	flagTiny         bool
-	flagDebug        bool
-	flagDebugDir     string
-	flagSeed         seedFlag
-	flagReversible   bool
-	flagCacheEncrypt = true // Default ON for security
-	buildNonceRandom bool
-	// TODO(pagran): in the future, when control flow obfuscation will be stable migrate to flag
-	flagControlFlow = os.Getenv("GARBLE_EXPERIMENTAL_CONTROLFLOW") == "1"
+	flagLiterals         bool
+	flagTiny             bool
+	flagDebug            bool
+	flagDebugDir         string
+	flagSeed             seedFlag
+	flagReversible       bool
+	flagCacheEncrypt     = true // Default ON for security
+	buildNonceRandom     bool
+	flagControlFlowMode  = ctrlflow.ModeOff
+	controlFlowFlagValue = controlFlowFlag{mode: ctrlflow.ModeOff}
 
 	// Presumably OK to share fset across packages.
 	fset = token.NewFileSet()
@@ -132,6 +133,7 @@ func init() {
 	flagSet.StringVar(&flagDebugDir, "debugdir", "", "Write the obfuscated source to a directory, e.g. -debugdir=out")
 	flagSet.Var(&flagSeed, "seed", "Provide a base64-encoded seed, e.g. -seed=o9WDTZ4CN4w\nFor a random seed, provide -seed=random")
 	flagSet.BoolVar(&flagReversible, "reversible", false, "Enable reversible obfuscation (weaker security but supports garble reverse and debugging)")
+	flagSet.Var(&controlFlowFlagValue, "controlflow", "Control-flow obfuscation scope: off, directives, auto, all")
 
 	var noCacheEncrypt bool
 	flagSet.BoolVar(&noCacheEncrypt, "no-cache-encrypt", false, "Disable cache encryption (not recommended for production)")
@@ -174,6 +176,9 @@ func main() {
 			fmt.Fprintf(os.Stderr, "garble allocs: %d\n", memStats.Mallocs)
 		}
 	}()
+	controlFlowFlagValue.mode = ctrlflow.ModeOff
+	controlFlowFlagValue.set = false
+	flagControlFlowMode = ctrlflow.ModeOff
 	if err := flagSet.Parse(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "Error parsing flags:", err)
 		usage()
@@ -186,6 +191,11 @@ func main() {
 			flagCacheEncrypt = false
 		}
 	})
+
+	if err := resolveControlFlowMode(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	log.SetPrefix("[garble] ")
 	log.SetFlags(0) // no timestamps, as they aren't very useful
@@ -520,7 +530,7 @@ This command wraps "go %s". Below is its help:
 	toolexecFlag.WriteString(" toolexec")
 	goArgs = append(goArgs, toolexecFlag.String())
 
-	if flagControlFlow {
+	if flagControlFlowMode.Enabled() {
 		goArgs = append(goArgs, "-debug-actiongraph", filepath.Join(sharedTempDir, actionGraphFileName))
 	}
 	if flagDebugDir != "" {
@@ -538,6 +548,46 @@ This command wraps "go %s". Below is its help:
 	goArgs = append(goArgs, args...)
 
 	return exec.Command("go", goArgs...), nil
+}
+
+type controlFlowFlag struct {
+	mode ctrlflow.Mode
+	set  bool
+}
+
+func (f controlFlowFlag) String() string {
+	return f.mode.String()
+}
+
+func (f *controlFlowFlag) Set(value string) error {
+	mode, err := ctrlflow.ParseMode(value)
+	if err != nil {
+		return err
+	}
+	f.mode = mode
+	f.set = true
+	return nil
+}
+
+func resolveControlFlowMode() error {
+	if controlFlowFlagValue.set {
+		flagControlFlowMode = controlFlowFlagValue.mode
+		return nil
+	}
+
+	if value := os.Getenv("GARBLE_CONTROLFLOW"); value != "" {
+		mode, err := ctrlflow.ParseMode(value)
+		if err != nil {
+			return err
+		}
+		flagControlFlowMode = mode
+		controlFlowFlagValue.mode = mode
+		return nil
+	}
+
+	flagControlFlowMode = ctrlflow.ModeOff
+	controlFlowFlagValue.mode = ctrlflow.ModeOff
+	return nil
 }
 
 type seedFlag struct {

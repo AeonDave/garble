@@ -1,5 +1,4 @@
-env GARBLE_EXPERIMENTAL_CONTROLFLOW=1
-exec garble -literals -debugdir=debug -seed=0002deadbeef build -o=main$exe
+exec garble -literals -debugdir=debug -seed=0002deadbeef -controlflow=directives build -o=main$exe
 
 stderr '"test/main.func1" function has no effect on the resulting binary'
 

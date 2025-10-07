@@ -1,0 +1,57 @@
+env GARBLE_CONTROLFLOW=
+exec garble -debugdir=debug_off -seed=0002deadbeef build -o=main$exe
+! exists $WORK/debug_off/test/main/GARBLE_controlflow.go
+rm main$exe
+
+exec garble -debugdir=debug_auto -seed=0002deadbeef -controlflow=auto build -o=main$exe
+
+# auto mode should pick up main without directive
+grep 'func main()' $WORK/debug_auto/test/main/GARBLE_controlflow.go
+# ensure the auto-obfuscated body contains at least one dispatcher label
+grep 'goto _s2a_' $WORK/debug_auto/test/main/GARBLE_controlflow.go
+
+# functions with //garble:nocontrolflow stay out of the obfuscated file
+! grep 'SkipMe' $WORK/debug_auto/test/main/GARBLE_controlflow.go
+
+exec ./main
+stdout 'start'
+stdout '16'
+stdout 'skip'
+rm main$exe
+
+env GARBLE_CONTROLFLOW=auto
+exec garble -debugdir=debug_env -seed=0002deadbeef build -o=main$exe
+grep 'goto _s2a_' $WORK/debug_env/test/main/GARBLE_controlflow.go
+rm main$exe
+
+-- go.mod --
+module test/main
+
+go 1.23
+-- main.go --
+package main
+
+import "fmt"
+
+//garble:nocontrolflow
+func SkipMe() {
+	fmt.Println("skip")
+}
+
+func helper(x int) int {
+	if x%2 == 0 {
+		return x / 2
+	}
+	return x*3 + 1
+}
+
+func main() {
+	fmt.Println("start")
+	fmt.Println(helper(5))
+	SkipMe()
+}
+
+-- main.stdout --
+start
+16
+skip

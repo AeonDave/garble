@@ -640,12 +640,18 @@ func (tf *transformer) typecheckParsedFiles(files []*ast.File) error {
 }
 
 func (tf *transformer) applyControlFlowTransforms(files *[]*ast.File, paths *[]string) (*ssa.Package, []string, error) {
-	if !flagControlFlow {
+	mode := flagControlFlowMode
+	if tf.curPkg.Standard && mode != ctrlflow.ModeAnnotated {
+		// The standard library contains compiler intrinsics and patterns
+		// that the current control-flow pipeline cannot rewrite safely.
+		mode = ctrlflow.ModeAnnotated
+	}
+	if !mode.Enabled() {
 		return nil, nil, nil
 	}
 	ssaPkg := ssaBuildPkg(tf.pkg, *files, tf.info)
 
-	newFileName, newFile, affectedFiles, err := ctrlflow.Obfuscate(fset, ssaPkg, *files, tf.obfRand)
+	newFileName, newFile, affectedFiles, err := ctrlflow.Obfuscate(fset, ssaPkg, *files, tf.obfRand, mode)
 	if err != nil {
 		return nil, nil, err
 	}
