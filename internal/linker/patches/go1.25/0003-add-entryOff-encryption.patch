@@ -1,23 +1,20 @@
-From 03342e79193875d08bf3f88154e77a453b28c076 Mon Sep 17 00:00:00 2001
-From: pagran <pagran@protonmail.com>
-Date: Sat, 14 Jan 2023 21:36:16 +0100
-Subject: [PATCH 3/3] add entryOff encryption
+From ac549de832316a48f74ee42625e1f3424f042dff Mon Sep 17 00:00:00 2001
+From: 430n <x430n@protonmail.com>
+Date: Tue, 7 Oct 2025 13:58:49 +0200
+Subject: [PATCH 3/3] Implement custom entryOff encryption logic
 
 ---
  cmd/link/internal/ld/pcln.go | 20 ++++++++++++++++++++
  1 file changed, 20 insertions(+)
 
 diff --git a/cmd/link/internal/ld/pcln.go b/cmd/link/internal/ld/pcln.go
-index b497573b15..f1021fcee3 100644
+index b497573b15..87fceb4 100644
 --- a/cmd/link/internal/ld/pcln.go
 +++ b/cmd/link/internal/ld/pcln.go
-@@ -806,6 +806,26 @@ func writeFuncs(ctxt *Link, sb *loader.SymbolBuilder, funcs []loader.Sym, inlSym
+@@ -841,6 +841,26 @@ func writeFuncs(ctxt *Link, sb *loader.SymbolBuilder, funcs []loader.Sym, inlSym
  			sb.SetUint32(ctxt.Arch, dataoff, uint32(ldr.SymValue(fdsym)-gofuncBase))
  		}
  	}
-+
-+	// Moving next code higher is not recommended.
-+	// Only at the end of the current function no edits between go versions
 +	garbleEntryOffKeyStr := os.Getenv("GARBLE_LINK_ENTRYOFF_KEY")
 +	if garbleEntryOffKeyStr == "" {
 +		panic("[garble] entryOff key must be set")
@@ -28,12 +25,15 @@ index b497573b15..f1021fcee3 100644
 +		panic(fmt.Errorf("[garble] invalid entryOff key %s: %v", garbleEntryOffKeyStr, err))
 +	}
 +
++	// Improved encryption: entryOff ^ (nameOff * key + (nameOff ^ key))
++	// This provides better diffusion than simple XOR+MUL while remaining fast.
 +	garbleData := sb.Data()
 +	for _, off := range startLocations {
 +		entryOff := ctxt.Arch.ByteOrder.Uint32(garbleData[off:])
 +		nameOff := ctxt.Arch.ByteOrder.Uint32(garbleData[off+4:])
 +
-+		sb.SetUint32(ctxt.Arch, int64(off), entryOff^(nameOff*garbleEntryOffKey))
++		encrypted := entryOff ^ (nameOff*garbleEntryOffKey + (nameOff ^ garbleEntryOffKey))
++		sb.SetUint32(ctxt.Arch, int64(off), encrypted)
 +	}
  }
  

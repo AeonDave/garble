@@ -77,9 +77,8 @@ func updateEntryOffset(file *ast.File, entryOffKey uint32) {
 	//	return f.datap.textAddr(f.entryoff)
 	// }
 	// It is enough to inject decryption into entry() method for program to start working transparently with encrypted value of funcInfo.entryOff:
-	// func (f funcInfo) entry() uintptr {
-	//	return f.datap.textAddr(f.entryoff ^ (uint32(f.nameOff) * <random int>))
-	// }
+	// Improved encryption: f.entryoff ^ (uint32(f.nameOff) * key + (uint32(f.nameOff) ^ key))
+	// This provides better diffusion than simple XOR+MUL while remaining fast.
 	updateEntryOff := func(node ast.Node) bool {
 		callExpr, ok := node.(*ast.CallExpr)
 		if !ok {
@@ -96,19 +95,34 @@ func updateEntryOffset(file *ast.File, entryOffKey uint32) {
 			return true
 		}
 
+		// Generate: entryOff ^ (nameOff * key + (nameOff ^ key))
+		nameOffU32 := ah.CallExpr(ast.NewIdent("uint32"), &ast.SelectorExpr{
+			X:   selExpr.X,
+			Sel: ast.NewIdent(nameOffField),
+		})
+		keyLit := &ast.BasicLit{
+			Kind:  token.INT,
+			Value: strconv.FormatUint(uint64(entryOffKey), 10),
+		}
+
 		callExpr.Args[0] = &ast.BinaryExpr{
 			X:  selExpr,
 			Op: token.XOR,
 			Y: &ast.ParenExpr{X: &ast.BinaryExpr{
-				X: ah.CallExpr(ast.NewIdent("uint32"), &ast.SelectorExpr{
-					X:   selExpr.X,
-					Sel: ast.NewIdent(nameOffField),
-				}),
-				Op: token.MUL,
-				Y: &ast.BasicLit{
-					Kind:  token.INT,
-					Value: strconv.FormatUint(uint64(entryOffKey), 10),
+				X: &ast.BinaryExpr{
+					X:  nameOffU32,
+					Op: token.MUL,
+					Y:  keyLit,
 				},
+				Op: token.ADD,
+				Y: &ast.ParenExpr{X: &ast.BinaryExpr{
+					X: ah.CallExpr(ast.NewIdent("uint32"), &ast.SelectorExpr{
+						X:   selExpr.X,
+						Sel: ast.NewIdent(nameOffField),
+					}),
+					Op: token.XOR,
+					Y:  keyLit,
+				}},
 			}},
 		}
 		entryOffUpdated = true
