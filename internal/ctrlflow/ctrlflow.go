@@ -5,7 +5,6 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
-	"log"
 	"math"
 	mathrand "math/rand"
 	"os"
@@ -106,6 +105,8 @@ func parseDirective(directive string) (directiveParamMap, bool) {
 // flatten_passes - controls number of passes of control flow flattening. Have exponential complexity and more than 3 passes are not recommended in most cases.
 // junk_jumps - controls how many junk jumps are added. It does not affect final binary by itself, but together with flattening linearly increases complexity.
 // block_splits - controls number of times largest block must be splitted. Together with flattening improves obfuscation of long blocks without branches.
+//
+//goland:noinspection GoUnhandledErrorResult
 func Obfuscate(fset *token.FileSet, ssaPkg *ssa.Package, files []*ast.File, obfRand *mathrand.Rand) (newFileName string, newFile *ast.File, affectedFiles []*ast.File, err error) {
 	var ssaFuncs []*ssa.Function
 	var ssaParams []directiveParamMap
@@ -132,8 +133,6 @@ func Obfuscate(fset *token.FileSet, ssaPkg *ssa.Package, files []*ast.File, obfR
 
 				ssaFuncs = append(ssaFuncs, ssaFunc)
 				ssaParams = append(ssaParams, params)
-
-				log.Printf("detected function for controlflow %s (params: %v)", funcDecl.Name.Name, params)
 
 				// Remove inplace function from original file
 				// TODO: implement a complete function removal

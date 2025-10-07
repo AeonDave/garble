@@ -36,7 +36,12 @@ var _ obfuscator = simple{}
 //   - Does not support garble reverse
 func (simple) obfuscate(rand *mathrand.Rand, data []byte, extKeys []*externalKey) *ast.BlockStmt {
 	// TODO: Implement true irreversible mode with hash-based obfuscation
-	// For now, both modes use the same reversible algorithm
+	if reversibleMode {
+		return obfuscateReversible(rand, data, extKeys)
+	}
+	// For now the irreversible path still uses the reversible algorithm until
+	// the dedicated implementation lands. Reading reversibleMode here keeps the
+	// flag wired through while we upgrade the backend algorithms.
 	return obfuscateReversible(rand, data, extKeys)
 }
 
@@ -88,16 +93,18 @@ func obfuscateReversible(rand *mathrand.Rand, data []byte, extKeys []*externalKe
 	var deobfStmts []ast.Stmt
 
 	// Create loop body that reverses the obfuscation
-	loopBody := []ast.Stmt{
-		// temp := data[i]
-		ah.AssignDefineStmt(
-			ast.NewIdent("temp"),
-			ah.IndexExpr("data", ast.NewIdent("i")),
-		),
-	}
+	loopBody := []ast.Stmt{}
 
 	// Reverse layer 3: Remove chain dependency (if not first byte)
-	if len(data) > 1 {
+	hasChainDependency := len(data) > 1
+	if hasChainDependency {
+		// temp := data[i]
+		loopBody = append(loopBody,
+			ah.AssignDefineStmt(
+				ast.NewIdent("temp"),
+				ah.IndexExpr("data", ast.NewIdent("i")),
+			),
+		)
 		// if i > 0 { data[i] = data[i] REVERSE_OP2 (prevTemp >> 3) }
 		loopBody = append(loopBody,
 			&ast.IfStmt{
@@ -168,14 +175,16 @@ func obfuscateReversible(rand *mathrand.Rand, data []byte, extKeys []*externalKe
 		},
 	)
 
-	// Update prevTemp for next iteration
-	loopBody = append(loopBody,
-		&ast.AssignStmt{
-			Lhs: []ast.Expr{ast.NewIdent("prevTemp")},
-			Tok: token.ASSIGN,
-			Rhs: []ast.Expr{ast.NewIdent("temp")},
-		},
-	)
+	// Update prevTemp for next iteration (only if chain dependency is present)
+	if hasChainDependency {
+		loopBody = append(loopBody,
+			&ast.AssignStmt{
+				Lhs: []ast.Expr{ast.NewIdent("prevTemp")},
+				Tok: token.ASSIGN,
+				Rhs: []ast.Expr{ast.NewIdent("temp")},
+			},
+		)
+	}
 
 	// Build the complete deobfuscation function
 	deobfStmts = []ast.Stmt{
@@ -197,12 +206,18 @@ func obfuscateReversible(rand *mathrand.Rand, data []byte, extKeys []*externalKe
 			Tok: token.DEFINE,
 			Rhs: []ast.Expr{dataToByteSliceWithExtKeys(rand, obfuscated, extKeys)},
 		},
-		// prevTemp := byte(0)
-		ah.AssignDefineStmt(
-			ast.NewIdent("prevTemp"),
-			ah.CallExprByName("byte", ah.IntLit(0)),
-		),
-		// for i := 0; i < len(data); i++ { ... }
+	}
+	// Only declare prevTemp if chain dependency is present
+	if hasChainDependency {
+		deobfStmts = append(deobfStmts,
+			ah.AssignDefineStmt(
+				ast.NewIdent("prevTemp"),
+				ah.CallExprByName("byte", ah.IntLit(0)),
+			),
+		)
+	}
+	// for i := 0; i < len(data); i++ { ... }
+	deobfStmts = append(deobfStmts,
 		&ast.ForStmt{
 			Init: &ast.AssignStmt{
 				Lhs: []ast.Expr{ast.NewIdent("i")},
@@ -216,7 +231,7 @@ func obfuscateReversible(rand *mathrand.Rand, data []byte, extKeys []*externalKe
 			},
 			Body: &ast.BlockStmt{List: loopBody},
 		},
-	}
+	)
 
 	return ah.BlockStmt(deobfStmts...)
 }

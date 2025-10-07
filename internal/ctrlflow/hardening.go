@@ -9,8 +9,18 @@ import (
 
 	"golang.org/x/tools/go/ssa"
 	ah "mvdan.cc/garble/internal/asthelper"
-	"mvdan.cc/garble/internal/literals"
 )
+
+const (
+	// hardeningKeyMinBytes keeps the dispatcher keys large enough to resist
+	// trivial inspection while still cheap to generate at build time.
+	hardeningKeyMinBytes    = 8
+	hardeningKeyRandomRange = 8
+)
+
+func randomHardeningKeySize(rnd *mathrand.Rand) int {
+	return hardeningKeyMinBytes + rnd.Intn(hardeningKeyRandomRange)
+}
 
 var hardeningMap = map[string]dispatcherHardening{
 	"xor":            xorHardening{},
@@ -75,7 +85,7 @@ func (xorHardening) Apply(dispatcher []cfgInfo, ssaRemap map[ssa.Value]ast.Expr,
 	globalKeyName, localKeyName := getRandomName(rnd), getRandomName(rnd)
 
 	firstKey := int(rnd.Int31())
-	secondKey := make([]byte, literals.MinSize+mathrand.Intn(literals.MinSize)) // make second part of key literals obfuscation friendly
+	secondKey := make([]byte, randomHardeningKeySize(rnd)) // size chosen to balance entropy and codegen cost
 	if _, err := rnd.Read(secondKey); err != nil {
 		panic(err)
 	}
@@ -149,7 +159,7 @@ func (xorHardening) Apply(dispatcher []cfgInfo, ssaRemap map[ssa.Value]ast.Expr,
 type delegateTableHardening struct{}
 
 func (delegateTableHardening) Apply(dispatcher []cfgInfo, ssaRemap map[ssa.Value]ast.Expr, rnd *mathrand.Rand) (ast.Decl, ast.Stmt) {
-	keySize := literals.MinSize + mathrand.Intn(literals.MinSize)
+	keySize := randomHardeningKeySize(rnd)
 
 	// Reusing multiple times one decryption function is fine,
 	// but it doesn't make sense to generate more functions than keys.
