@@ -1,5 +1,7 @@
-# Test runtime metadata encryption
-# Verifies that function metadata (entryoff) is encrypted and runtime.FuncForPC works correctly
+# Test runtime metadata encryption with Feistel cipher
+# Verifies that function metadata (entryoff) is encrypted using 4-round Feistel network
+# with tweak support (nameOff as tweak for per-function uniqueness)
+# Tests that runtime.FuncForPC and runtime.Caller still work correctly.
 
 exec garble build
 exec ./main$exe

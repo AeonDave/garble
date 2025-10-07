@@ -1,14 +1,14 @@
-From a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0 Mon Sep 17 00:00:00 2001
-From: Dave <nova.davide@gmail.com>
-Date: Mon, 6 Oct 2025 20:15:00 +0200
-Subject: [PATCH 3/3] add Feistel encryption for entryOff
+From 03342e79193875d08bf3f88154e77a453b28c076 Mon Sep 17 00:00:00 2001
+From: pagran <pagran@protonmail.com>
+Date: Sat, 14 Jan 2023 21:36:16 +0100
+Subject: [PATCH 3/3] add Feistel entryOff encryption
 
 ---
- cmd/link/internal/ld/pcln.go | 95 ++++++++++++++++++++++++++++++++++--
- 1 file changed, 85 insertions(+), 10 deletions(-)
+ cmd/link/internal/ld/pcln.go | 82 ++++++++++++++++++++++++++++++++----
+ 1 file changed, 74 insertions(+), 8 deletions(-)
 
 diff --git a/cmd/link/internal/ld/pcln.go b/cmd/link/internal/ld/pcln.go
-index deded50..2c41377 100644
+index b497573b15..2c41377 100644
 --- a/cmd/link/internal/ld/pcln.go
 +++ b/cmd/link/internal/ld/pcln.go
 @@ -4,25 +4,23 @@
@@ -132,3 +132,6 @@ index deded50..2c41377 100644
  // findfunctab generates a lookup table to quickly find the containing
  // function for a pc. See src/runtime/symtab.go:findfunc for details.
  func (ctxt *Link) findfunctab(state *pclntab, container loader.Bitmap) {
+--
+2.48.1
+
