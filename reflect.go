@@ -79,7 +79,7 @@ func reflectMainPostPatch(file []byte, lpkg *listedPackage, pkg pkgCache) []byte
 		return bytes.Replace(file, namePairs, namePairs, 1)
 	}
 
-	// Legacy behavior when -reflect-map is explicitly enabled:
+	// Legacy behavior when -reversible is explicitly enabled:
 	// Populate the array with obfuscated->original name mappings.
 	// WARNING: This leaks original names in the binary and enables garble reverse.
 	keys := slices.Sorted(maps.Keys(pkg.ReflectObjectNames))

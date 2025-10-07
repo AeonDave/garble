@@ -1,6 +1,13 @@
-# garble
+# garble hardened
 
-	go install mvdan.cc/garble@latest
+Install from this repository (recommended for this fork):
+
+- Clone: https://github.com/AeonDave/garble
+- From the repo root: run `go install ./...`
+
+Notes
+- The module path remains `mvdan.cc/garble` for compatibility; using a local clone ensures you install this fork.
+- Alternatively, to install the upstream module, use `go install mvdan.cc/garble@latest`.
 
 Obfuscate Go code by wrapping the Go toolchain. Requires Go 1.25 or later.
 
@@ -10,6 +17,18 @@ The tool also supports `garble test` to run tests with obfuscated code,
 `garble run` to obfuscate and execute simple programs,
 and `garble reverse` to de-obfuscate text such as stack traces.
 Run `garble -h` to see all available commands and flags.
+
+### Quick start
+
+1. Install from this repo:
+  - `git clone https://github.com/AeonDave/garble`
+  - `cd garble && go install ./...`
+2. Obfuscate your binary: `garble build ./cmd/myapp`.
+3. Make builds reproducible: provide both a seed and a build nonce.
+  - Example: `garble -seed=Z3JhZmY build ./cmd/myapp`
+  - And set `GARBLE_BUILD_NONCE` to a fixed base64 value when you need identical outputs across runs.
+
+See [docs/FEATURE_TOGGLES.md](docs/FEATURE_TOGGLES.md) for a complete flag and environment reference.
 
 You can also use `go install mvdan.cc/garble@master` to install the latest development version.
 
@@ -36,6 +55,7 @@ order to:
 * Strip debugging information and symbol tables via `-ldflags="-w -s"`
 * [Obfuscate literals](#literal-obfuscation), if the `-literals` flag is given
 * Remove [extra information](#tiny-mode), if the `-tiny` flag is given
+* Apply [control-flow obfuscation](docs/CONTROLFLOW.md), if `-controlflow` is enabled
 
 By default, the tool obfuscates all the packages being built.
 You can manually specify which packages to obfuscate via `GOGARBLE`,
@@ -76,44 +96,42 @@ similar to the [common practice in Android](https://developer.android.com/build/
 Obfuscation has also helped some open source developers work around
 anti-virus scans incorrectly treating Go binaries as malware.
 
+### Key flags and environment knobs
+
+- **`-literals`** – Scrambles string and numeric literals. Expect a modest CPU cost; perfect when protecting messages or secrets baked into the binary.
+- **`-controlflow`** (`off`, `directives`, `auto`, `all`) – Adds jump-heavy control-flow. Start with `auto` for broad protection while skipping risky functions.
+- **`-tiny`** – Strips file/line metadata for smaller binaries. Combine with `-reversible` only if you still need `garble reverse`.
+- **`-reversible`** – Keeps breadcrumbs so `garble reverse` can de-obfuscate stack traces. Leave off for maximum security.
+- **`-seed`** / **`GARBLE_BUILD_NONCE`** – Provide reproducible randomness. Pair a fixed seed with a fixed nonce when you need identical builds in CI.
+- **`GOGARBLE`** – Limit obfuscation to selected packages. Example: `GOGARBLE=./internal/...` to leave public commands untouched.
+- **`-no-cache-encrypt`** – Opt out of cache encryption. By default Garble encrypts its cache whenever a seed is available.
+
+The full matrix of switches, defaults, and precedence rules lives in [docs/FEATURE_TOGGLES.md](docs/FEATURE_TOGGLES.md).
+
 ### Literal obfuscation
 
 Using the `-literals` flag causes literal expressions such as strings to be
-replaced with more complex expressions, resolving to the same value at run-time.
-String literals injected via `-ldflags=-X` are also replaced by this flag.
-This feature is opt-in, as it can cause slow-downs depending on the input code.
+replaced with more complex expressions that resolve to the same value at run time.
+This feature is opt-in, as it can cause slow-downs depending on the input code and size of literals.
 
 Garble uses multiple obfuscation strategies for defense-in-depth:
-* **ASCON-128 encryption** (60% of literals): NIST-standard authenticated encryption with inline decryption code
-* **Multi-layer XOR** (40% of literals): 3-layer obfuscation with position-dependent keys, nonces, and byte chaining
+* ASCON-128 authenticated encryption with inline decryption code (used frequently)
+* Reversible simple obfuscator for small and performance-sensitive cases
 
-Literals used in constant expressions cannot be obfuscated, since they are
-resolved at compile time. This includes any expressions part of a `const`
-declaration, for example.
+Notes and limits
+- Literals used in constant expressions cannot be obfuscated, since they are folded at compile time (e.g. values in a `const` block).
+- Strings injected via `-ldflags=-X` are not currently covered by `-literals`.
 
 ### Reversible obfuscation
 
-By default, garble uses **irreversible obfuscation** for maximum security:
-* One-way transformations (SHA-256, S-box substitution, hash chaining)
-* No `garble reverse` support (stack traces cannot be de-obfuscated)
-* Computationally infeasible to reverse even with source code access
+The `-reversible` flag controls whether original identifier names are embedded for tooling.
 
-Use the `-reversible` flag to enable weaker but reversible obfuscation:
-* Supports `garble reverse` for de-obfuscating stack traces and debugging
-* Maintains reflection name mappings (`_originalNamePairs`)
-* Uses symmetric operations (XOR, ADD, SUB) that can be reversed
-* **Security trade-off**: Provides a de-obfuscation oracle attackers can exploit
+- Default (no `-reversible`): reversibility metadata is omitted, and the reflection name map stays empty. This avoids leaking original names in the binary.
+- With `-reversible`: the reflection mapping is populated to enable `garble reverse` and improve debugging. This is an explicit security trade‑off.
 
-**Recommendation**: Only use `-reversible` during development/debugging. Production builds should use default irreversible mode.
-
-```sh
-# Maximum security (default - irreversible)
-garble -literals build -o app
-
-# Development/debugging (reversible - supports garble reverse)
-garble -reversible -literals build -o app
-garble reverse app  # Works only with -reversible builds
-```
+Recommendation
+- Leave `-reversible` off for production builds.
+- Enable it in development/staging when you need to de‑obfuscate stack traces with `garble reverse`.
 
 ### Tiny mode
 
@@ -134,32 +152,18 @@ Similarly, `garble reverse` is generally not useful in this mode.
 
 ### Control flow obfuscation
 
-See: [CONTROLFLOW.md](docs/CONTROLFLOW.md)
+See: [docs/CONTROLFLOW.md](docs/CONTROLFLOW.md)
 
-### Security Improvements
+### Security snapshot
 
-Garble has undergone significant security hardening to resist reverse engineering tools like `mandiant/gostringungarbler` and `Invoke-RE/ungarble_bn`. Key improvements include:
+Recent releases focus on raising the bar for reverse engineers while keeping the tooling practical:
 
-**✅ Non-Deterministic Hashing** (October 2025)
-- Build-specific random nonce prevents pattern matching across binaries
-- SHA-256 mixing of seed + nonce eliminates deterministic hash oracle attacks
-- Makes hash-based attacks computationally infeasible
+- Fresh names every build – Garble mixes your seed with a per-build nonce, so identical sources still produce different symbol hashes unless you fix both values.
+- Encrypted literals when `-literals` is enabled – many string literals are protected with inline ASCON, raising the cost of static string scraping.
+- Optional reversibility – keep `-reversible` off in production, enable it in staging to recover stack traces with `garble reverse`.
+- Hardened cache – when a seed is present (and `-no-cache-encrypt` is not set), Garble encrypts its on-disk cache automatically.
 
-**✅ Irreversible Obfuscation by Default** (October 2025)
-- One-way literal obfuscation using SHA-256, S-box substitution, and hash chaining
-- New `-reversible` flag controls obfuscation mode (default: OFF for maximum security)
-- Eliminates reflection name oracle (`_originalNamePairs` empty by default)
-- Opt-in legacy mode available via `-reversible` flag for debugging/garble reverse support
-
-**✅ Enhanced Literal Obfuscation** (October 2025)
-- **Irreversible mode** (default): SHA-256 + nonce-dependent S-boxes + hash chaining (2^256 security)
-- **Reversible mode** (`-reversible`): 3-layer XOR with position-dependent keys and byte chaining
-- ASCON-128 authenticated encryption (NIST standard) for 60% of literals in both modes
-- Defense-in-depth: Multiple obfuscation strategies prevent pattern recognition
-
-**Full Details**: See [docs/SECURITY.md](docs/SECURITY.md) for complete security analysis, threat model assessment, and implementation details.
-
-**Security Score**: 🟢 80% (5/8 categories hardened)
+Want the deep dive? The design notes and threat model live in [docs/SECURITY.md](docs/SECURITY.md).
 
 ### Speed
 
