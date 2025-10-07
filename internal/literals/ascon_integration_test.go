@@ -19,7 +19,12 @@ import (
 
 // TestAsconInlineEndToEnd tests that the generated inline ASCON code actually works
 // by compiling and executing it
+// This test is slow due to compilation - skip unless running integration tests
 func TestAsconInlineEndToEnd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping slow integration test in short mode")
+	}
+
 	// Create temporary directory
 	tmpDir := t.TempDir()
 
@@ -174,7 +179,12 @@ func generateTestProgram(key, nonce, ciphertextAndTag, expectedPlaintext []byte)
 }
 
 // TestAsconInlineWithTampering tests that the inline code detects tampering
+// This test is slow due to compilation - skip unless running integration tests
 func TestAsconInlineWithTampering(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping slow integration test in short mode")
+	}
+
 	tmpDir := t.TempDir()
 
 	plaintext := []byte("Secret message")

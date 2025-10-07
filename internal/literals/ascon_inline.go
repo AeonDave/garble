@@ -115,6 +115,7 @@ func %s(key, nonce, ciphertextAndTag []byte) ([]byte, bool) {
 	receivedTag := ciphertextAndTag[ciphertextLen:]
 	
 	s := %s(key, nonce)
+	s[4] ^= 1
 	plaintext := make([]byte, len(ciphertext))
 	offset := 0
 	
@@ -143,12 +144,11 @@ func %s(key, nonce, ciphertextAndTag []byte) ([]byte, bool) {
 	}
 	
 	expectedTag := %s(&s, key)
-	tagMatch := true
+	var diff byte
 	for i := 0; i < 16; i++ {
-		if receivedTag[i] != expectedTag[i] {
-			tagMatch = false
-		}
+		diff |= receivedTag[i] ^ expectedTag[i]
 	}
+	tagMatch := diff == 0
 	
 	if !tagMatch {
 		return nil, false

@@ -113,6 +113,7 @@ var (
 	flagDebugDir     string
 	flagSeed         seedFlag
 	flagReversible   bool
+	flagCacheEncrypt = true // Default ON for security
 	buildNonceRandom bool
 	// TODO(pagran): in the future, when control flow obfuscation will be stable migrate to flag
 	flagControlFlow = os.Getenv("GARBLE_EXPERIMENTAL_CONTROLFLOW") == "1"
@@ -131,6 +132,9 @@ func init() {
 	flagSet.StringVar(&flagDebugDir, "debugdir", "", "Write the obfuscated source to a directory, e.g. -debugdir=out")
 	flagSet.Var(&flagSeed, "seed", "Provide a base64-encoded seed, e.g. -seed=o9WDTZ4CN4w\nFor a random seed, provide -seed=random")
 	flagSet.BoolVar(&flagReversible, "reversible", false, "Enable reversible obfuscation (weaker security but supports garble reverse and debugging)")
+
+	var noCacheEncrypt bool
+	flagSet.BoolVar(&noCacheEncrypt, "no-cache-encrypt", false, "Disable cache encryption (not recommended for production)")
 }
 
 //goland:noinspection GoUnhandledErrorResult
@@ -175,6 +179,14 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
+
+	// Handle -no-cache-encrypt flag to disable default encryption
+	flagSet.Visit(func(f *flag.Flag) {
+		if f.Name == "no-cache-encrypt" {
+			flagCacheEncrypt = false
+		}
+	})
+
 	log.SetPrefix("[garble] ")
 	log.SetFlags(0) // no timestamps, as they aren't very useful
 	if flagDebug {
@@ -401,6 +413,7 @@ This command wraps "go %s". Below is its help:
 	}
 	sharedCache.BuildNonce = nonce
 	sharedCache.SeedHashInput = combineSeedAndNonce(flagSeed.bytes, nonce)
+	sharedCache.OriginalSeed = flagSeed.bytes // NEW: Save raw seed for cache encryption
 	buildNonceRandom = nonceRandom
 	if buildNonceRandom {
 		_, _ = fmt.Fprintf(os.Stderr, "-nonce chosen at random: %s\n", base64.RawStdEncoding.EncodeToString(nonce))

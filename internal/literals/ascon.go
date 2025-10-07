@@ -144,6 +144,10 @@ func AsconEncrypt(key, nonce, plaintext []byte) []byte {
 	// Initialize state
 	s := asconInitialize(key, nonce)
 
+	// Domain separation: required by ASCON-128 spec before processing payload
+	// This is needed even with empty Associated Data (AD)
+	s[4] ^= 1
+
 	// Process plaintext (encryption)
 	ciphertext := make([]byte, len(plaintext))
 	offset := 0
@@ -217,6 +221,10 @@ func AsconDecrypt(key, nonce, ciphertextAndTag []byte) ([]byte, bool) {
 	// Initialize state
 	s := asconInitialize(key, nonce)
 
+	// Domain separation: required by ASCON-128 spec before processing payload
+	// This is needed even with empty Associated Data (AD)
+	s[4] ^= 1
+
 	// Process ciphertext (decryption)
 	plaintext := make([]byte, len(ciphertext))
 	offset := 0
@@ -268,13 +276,12 @@ func AsconDecrypt(key, nonce, ciphertextAndTag []byte) ([]byte, bool) {
 	// Finalization - compute expected tag
 	expectedTag := asconFinalize(&s, key)
 
-	// Constant-time tag comparison
-	tagMatch := true
+	// Constant-time tag comparison (branchless to prevent timing attacks)
+	var diff byte
 	for i := 0; i < asconTagSize; i++ {
-		if receivedTag[i] != expectedTag[i] {
-			tagMatch = false
-		}
+		diff |= receivedTag[i] ^ expectedTag[i]
 	}
+	tagMatch := diff == 0
 
 	if !tagMatch {
 		// Authentication failed - clear plaintext for security

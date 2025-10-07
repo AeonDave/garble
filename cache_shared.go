@@ -49,6 +49,7 @@ type sharedCacheType struct {
 	BuildNonce         []byte
 	BuildFlagHashInput []byte
 	SeedHashInput      []byte
+	OriginalSeed       []byte // NEW: Raw seed for cache encryption (not hashed)
 
 	GOGARBLE string
 
@@ -92,9 +93,13 @@ func loadSharedCache() error {
 	defer func(f *os.File) {
 		_ = f.Close()
 	}(f)
+
+	// Always use unencrypted format for shared cache
+	// (Encryption applies only to persistent pkgCache, not temp shared cache)
 	if err := gob.NewDecoder(f).Decode(&sharedCache); err != nil {
 		return fmt.Errorf("cannot decode shared file: %v", err)
 	}
+
 	return nil
 }
 
@@ -110,9 +115,13 @@ func saveSharedCache() (string, error) {
 	}
 
 	cachePath := filepath.Join(dir, "main-cache.gob")
+
+	// Always use unencrypted format for shared cache
+	// (Encryption applies only to persistent pkgCache, not temp shared cache)
 	if err := writeGobExclusive(cachePath, &sharedCache); err != nil {
 		return "", err
 	}
+
 	return dir, nil
 }
 

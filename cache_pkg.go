@@ -19,6 +19,8 @@ import (
 	"github.com/rogpeppe/go-internal/cache"
 	"golang.org/x/tools/go/ast/astutil"
 	"golang.org/x/tools/go/ssa"
+
+	"mvdan.cc/garble/internal/literals"
 )
 
 type (
@@ -50,6 +52,46 @@ type pkgCache struct {
 func (c *pkgCache) CopyFrom(c2 pkgCache) {
 	maps.Copy(c.ReflectAPIs, c2.ReflectAPIs)
 	maps.Copy(c.ReflectObjectNames, c2.ReflectObjectNames)
+}
+
+func cacheEncryptionSeed() []byte {
+	if !flagCacheEncrypt {
+		return nil
+	}
+	if sharedCache != nil && len(sharedCache.OriginalSeed) > 0 {
+		return sharedCache.OriginalSeed
+	}
+	if flagSeed.present() {
+		return flagSeed.bytes
+	}
+	return nil
+}
+
+func decodePkgCacheBytes(data []byte) (pkgCache, error) {
+	var loaded pkgCache
+	var decryptErr error
+
+	if seed := cacheEncryptionSeed(); len(seed) > 0 && len(data) >= asconCacheNonceSize+asconCacheTagSize {
+		key := deriveCacheKey(seed)
+		nonce := data[:asconCacheNonceSize]
+		ciphertextAndTag := data[asconCacheNonceSize:]
+		if plaintext, ok := literals.AsconDecrypt(key[:], nonce, ciphertextAndTag); ok {
+			if decErr := gob.NewDecoder(bytes.NewReader(plaintext)).Decode(&loaded); decErr == nil {
+				return loaded, nil
+			} else {
+				decryptErr = decErr
+			}
+		}
+	}
+
+	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&loaded); err == nil {
+		return loaded, nil
+	}
+
+	if decryptErr != nil {
+		return pkgCache{}, decryptErr
+	}
+	return pkgCache{}, fmt.Errorf("gob decode: unable to decode cache entry")
 }
 
 func ssaBuildPkg(pkg *types.Package, files []*ast.File, info *types.Info) *ssa.Package {
@@ -159,21 +201,16 @@ func loadPkgCache(lpkg *listedPackage, pkg *types.Package, files []*ast.File, in
 	filename, _, err := fsCache.GetFile(lpkg.GarbleActionID)
 	// Already in the cache; load it directly.
 	if err == nil {
-		f, err := os.Open(filename)
-		if err != nil {
-			return pkgCache{}, err
+		if data, readErr := os.ReadFile(filename); readErr == nil {
+			if decoded, decodeErr := decodePkgCacheBytes(data); decodeErr == nil {
+				pkgCacheMu.Lock()
+				pkgCacheMem[key] = decoded
+				pkgCacheMu.Unlock()
+				return decoded, nil
+			}
 		}
-		defer func(f *os.File) {
-			_ = f.Close()
-		}(f)
-		var loaded pkgCache
-		if err := gob.NewDecoder(f).Decode(&loaded); err != nil {
-			return pkgCache{}, fmt.Errorf("gob decode: %w", err)
-		}
-		pkgCacheMu.Lock()
-		pkgCacheMem[key] = loaded
-		pkgCacheMu.Unlock()
-		return loaded, nil
+		// Cache load failed - treat as cache miss and recompute
+		// (This handles corrupted cache, incompatible format, etc.)
 	}
 	computed, err := computePkgCache(fsCache, lpkg, pkg, files, info, ssaPkg)
 	if err != nil {
@@ -214,22 +251,18 @@ func computePkgCache(fsCache *cache.Cache, lpkg *listedPackage, pkg *types.Packa
 		}
 		if err := func() error { // function literal for the deferred close
 			if filename, _, err := fsCache.GetFile(lpkg.GarbleActionID); err == nil {
-				// Cache hit; append new entries to computed.
-				f, err := os.Open(filename)
-				if err != nil {
-					return err
+				// Cache hit; attempt to append new entries to computed.
+				if data, readErr := os.ReadFile(filename); readErr == nil {
+					if depCache, decodeErr := decodePkgCacheBytes(data); decodeErr == nil {
+						computed.CopyFrom(depCache)
+						return nil
+					}
 				}
-				defer func(f *os.File) {
-					_ = f.Close()
-				}(f)
-				if err := gob.NewDecoder(f).Decode(&computed); err != nil {
-					return fmt.Errorf("gob decode: %w", err)
-				}
-				return nil
 			}
-			// Missing or corrupted entry in the cache for a dependency.
-			// Could happen if GARBLE_CACHE was emptied but GOCACHE was not.
-			// Compute it, which can recurse if many entries are missing.
+			// Missing or incompatible entry in the cache for a dependency.
+			// Could happen if GARBLE_CACHE was emptied but GOCACHE was not, or if
+			// encrypted entries remain but this build lacks the seed. Compute it
+			// fresh, which can recurse if many entries are missing.
 			files, err := parseFiles(lpkg, lpkg.Dir, lpkg.CompiledGoFiles)
 			if err != nil {
 				return err
@@ -263,14 +296,29 @@ func computePkgCache(fsCache *cache.Cache, lpkg *listedPackage, pkg *types.Packa
 	}
 	inspector.recordReflection(ssaPkg)
 
-	// Unlikely that we could stream the gob encode, as cache.Put wants an io.ReadSeeker.
-	var buf bytes.Buffer
-	if err := gob.NewEncoder(&buf).Encode(computed); err != nil {
-		return pkgCache{}, err
+	// Encrypt cache if flag enabled and seed present
+	// Use sharedCache.OriginalSeed (shared across toolexec processes)
+	if seed := cacheEncryptionSeed(); len(seed) > 0 {
+		// encryptCacheWithASCON handles serialization + encryption
+		encrypted, err := encryptCacheWithASCON(computed, seed)
+		if err != nil {
+			return pkgCache{}, fmt.Errorf("cache encryption failed: %v", err)
+		}
+
+		if err := fsCache.PutBytes(lpkg.GarbleActionID, encrypted); err != nil {
+			return pkgCache{}, err
+		}
+	} else {
+		// Fallback: unencrypted gob encoding
+		var buf bytes.Buffer
+		if err := gob.NewEncoder(&buf).Encode(computed); err != nil {
+			return pkgCache{}, err
+		}
+		if err := fsCache.PutBytes(lpkg.GarbleActionID, buf.Bytes()); err != nil {
+			return pkgCache{}, err
+		}
 	}
-	if err := fsCache.PutBytes(lpkg.GarbleActionID, buf.Bytes()); err != nil {
-		return pkgCache{}, err
-	}
+
 	return computed, nil
 }
 
