@@ -336,7 +336,18 @@ func mainErr(args []string) error {
 
 			executablePath = modifiedLinkPath
 			_ = os.Setenv(linker.MagicValueEnv, strconv.FormatUint(uint64(magicValue()), 10))
-			_ = os.Setenv(linker.EntryOffKeyEnv, strconv.FormatUint(uint64(entryOffKey()), 10))
+
+			// Phase 2: Feistel encryption (runtime will use this instead of XOR)
+			seed := feistelSeed()
+			_ = os.Setenv(linker.FeistelSeedEnv, base64.StdEncoding.EncodeToString(seed))
+
+			// Pass reversible flag to linker
+			if flagReversible {
+				_ = os.Setenv(linker.ReversibleEnv, "true")
+			} else {
+				_ = os.Setenv(linker.ReversibleEnv, "false")
+			}
+
 			if flagTiny {
 				_ = os.Setenv(linker.TinyEnv, "true")
 			}

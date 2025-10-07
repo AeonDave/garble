@@ -1,43 +1,137 @@
 From 03342e79193875d08bf3f88154e77a453b28c076 Mon Sep 17 00:00:00 2001
 From: pagran <pagran@protonmail.com>
 Date: Sat, 14 Jan 2023 21:36:16 +0100
-Subject: [PATCH 3/3] add entryOff encryption
+Subject: [PATCH 3/3] add Feistel entryOff encryption
 
 ---
- cmd/link/internal/ld/pcln.go | 20 ++++++++++++++++++++
- 1 file changed, 20 insertions(+)
+ cmd/link/internal/ld/pcln.go | 82 ++++++++++++++++++++++++++++++++----
+ 1 file changed, 74 insertions(+), 8 deletions(-)
 
 diff --git a/cmd/link/internal/ld/pcln.go b/cmd/link/internal/ld/pcln.go
-index b497573b15..f1021fcee3 100644
+index b497573b15..2c41377 100644
 --- a/cmd/link/internal/ld/pcln.go
 +++ b/cmd/link/internal/ld/pcln.go
-@@ -806,6 +806,26 @@ func writeFuncs(ctxt *Link, sb *loader.SymbolBuilder, funcs []loader.Sym, inlSym
+@@ -4,25 +4,23 @@
+
+ package ld
+
+-import (
+-	"os"
+-)
+-
+-import (
+-	"unicode"
+-)
+-
+ import (
+ 	"cmd/internal/goobj"
+ 	"cmd/internal/objabi"
+ 	"cmd/internal/sys"
+ 	"cmd/link/internal/loader"
+ 	"cmd/link/internal/sym"
++	"crypto/sha256"
++	"encoding/base64"
++	"encoding/binary"
+ 	"fmt"
+ 	"internal/abi"
+ 	"internal/buildcfg"
++	"math/bits"
++	"os"
+ 	"path/filepath"
+ 	"strings"
++	"unicode"
+ )
+
+ const funcSize = 11 * 4 // funcSize is the size of the _func object in runtime/runtime2.go
+@@ -728,6 +726,22 @@ func writeFuncs(ctxt *Link, sb *loader.SymbolBuilder, funcs []loader.Sym, inlSym
+ 	var pcsp, pcfile, pcline, pcinline loader.Sym
+ 	var pcdata []loader.Sym
+
++	// Retrieve and validate the Feistel seed from environment
++	linkSeedBase64 := os.Getenv("LINK_SEED")
++	if linkSeedBase64 == "" {
++		panic("linker: LINK_SEED environment variable must be set for runtime metadata encryption")
++	}
++	seedBytes, err := base64.StdEncoding.DecodeString(linkSeedBase64)
++	if err != nil {
++		panic(fmt.Sprintf("linker: failed to decode LINK_SEED: %v", err))
++	}
++	if len(seedBytes) != 32 {
++		panic(fmt.Sprintf("linker: LINK_SEED must be 32 bytes, got %d", len(seedBytes)))
++	}
++	var seedArray [32]byte
++	copy(seedArray[:], seedBytes)
++	keys := deriveFeistelKeys(seedArray)
++
+ 	// Write the individual func objects (runtime._func struct).
+ 	for i, s := range funcs {
+ 		startLine := int32(0)
+@@ -841,6 +855,20 @@ func writeFuncs(ctxt *Link, sb *loader.SymbolBuilder, funcs []loader.Sym, inlSym
  			sb.SetUint32(ctxt.Arch, dataoff, uint32(ldr.SymValue(fdsym)-gofuncBase))
  		}
  	}
-+
-+	// Moving next code higher is not recommended.
-+	// Only at the end of the current function no edits between go versions
-+	garbleEntryOffKeyStr := os.Getenv("GARBLE_LINK_ENTRYOFF_KEY")
-+	if garbleEntryOffKeyStr == "" {
-+		panic("[garble] entryOff key must be set")
-+	}
-+	var garbleEntryOffKey uint32
-+	// Use fmt package instead of strconv to avoid importing a new package
-+	if _, err := fmt.Sscan(garbleEntryOffKeyStr, &garbleEntryOffKey); err != nil {
-+		panic(fmt.Errorf("[garble] invalid entryOff key %s: %v", garbleEntryOffKeyStr, err))
-+	}
-+
-+	garbleData := sb.Data()
++	// Apply Feistel encryption to all entryOff values
++	// Skip sentinel values (^uint32(0)) used for special function entries
++	linkData := sb.Data()
 +	for _, off := range startLocations {
-+		entryOff := ctxt.Arch.ByteOrder.Uint32(garbleData[off:])
-+		nameOff := ctxt.Arch.ByteOrder.Uint32(garbleData[off+4:])
-+
-+		sb.SetUint32(ctxt.Arch, int64(off), entryOff^(nameOff*garbleEntryOffKey))
++		entryOff := ctxt.Arch.ByteOrder.Uint32(linkData[off:])
++		// Skip encryption for sentinel values
++		if entryOff == ^uint32(0) {
++			continue
++		}
++		// Use nameOff as tweak for format-preserving encryption
++		nameOff := ctxt.Arch.ByteOrder.Uint32(linkData[off+4:])
++		encrypted := feistelEncrypt(entryOff, nameOff, keys)
++		sb.SetUint32(ctxt.Arch, int64(off), encrypted)
 +	}
  }
- 
+
  // pclntab initializes the pclntab symbol with
--- 
+@@ -916,6 +944,44 @@ const (
+ 	NOIDX         = 0x7fffffff
+ )
+
++// Feistel cipher constants and implementation
++const feistelRounds = 4
++
++// deriveFeistelKeys generates round keys from the seed
++func deriveFeistelKeys(seed [32]byte) [feistelRounds]uint32 {
++	var keys [feistelRounds]uint32
++	for i := 0; i < feistelRounds; i++ {
++		h := sha256.New()
++		h.Write(seed[:])
++		h.Write([]byte{byte(i)})
++		sum := h.Sum(nil)
++		keys[i] = binary.LittleEndian.Uint32(sum[:4])
++	}
++	return keys
++}
++
++// feistelEncrypt performs format-preserving encryption on a 32-bit value
++// using a 4-round Feistel network with tweak support
++func feistelEncrypt(value, tweak uint32, keys [feistelRounds]uint32) uint32 {
++	left := uint16(value >> 16)
++	right := uint16(value)
++	for round := 0; round < feistelRounds; round++ {
++		f := feistelRound(right, tweak, keys[round])
++		left, right = right, left^f
++	}
++	return (uint32(left) << 16) | uint32(right)
++}
++
++// feistelRound computes the round function: F(R, tweak, key)
++func feistelRound(right uint16, tweak uint32, key uint32) uint16 {
++	x := uint32(right)
++	x ^= tweak
++	x += key*0x9e3779b1 + 0x7f4a7c15
++	x = bits.RotateLeft32(x^key, int(key&31))
++	x ^= x >> 16
++	return uint16(x)
++}
++
+ // findfunctab generates a lookup table to quickly find the containing
+ // function for a pc. See src/runtime/symtab.go:findfunc for details.
+ func (ctxt *Link) findfunctab(state *pclntab, container loader.Bitmap) {
+--
 2.48.1
 

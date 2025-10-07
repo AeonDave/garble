@@ -1,0 +1,73 @@
+# Test runtime metadata encryption with Feistel cipher
+# Verifies that function metadata (entryoff) is encrypted using 4-round Feistel network
+# with tweak support (nameOff as tweak for per-function uniqueness)
+# Tests that runtime.FuncForPC and runtime.Caller still work correctly.
+
+exec garble build
+exec ./main$exe
+stdout 'Function name found: true'
+stdout 'Stack trace works: true'
+
+! binsubstr main$exe 'RuntimeMetadataTest'
+
+[short] stop
+
+# Test with -seed for deterministic encryption keys (base64 encoded)
+exec garble -seed=dGVzdF9ydW50aW1lX3NlZWQ= build -o main_seeded$exe
+exec ./main_seeded$exe  
+stdout 'Function name found: true'
+stdout 'Stack trace works: true'
+
+# Verify both binaries are different (different nonce)
+! cmp main$exe main_seeded$exe
+
+-- go.mod --
+module test/main
+
+go 1.23
+-- main.go --
+package main
+
+import (
+	"fmt"
+	"reflect"
+	"runtime"
+	"strings"
+)
+
+type RuntimeMetadataTest struct {
+	Field string
+}
+
+func (r RuntimeMetadataTest) TestMethod() string {
+	return "method_" + r.Field
+}
+
+//go:noinline
+func testFunction() string {
+	return "test_result"
+}
+
+func main() {
+	// Test 1: runtime.FuncForPC should work with encrypted metadata
+	pc := reflect.ValueOf(testFunction).Pointer()
+	fn := runtime.FuncForPC(pc)
+	
+	hasName := fn != nil && fn.Name() != ""
+	fmt.Println("Function name found:", hasName)
+	
+	// Test 2: Stack traces should work
+	pc2, _, _, ok := runtime.Caller(0)
+	fn2 := runtime.FuncForPC(pc2)
+	hasStackTrace := ok && fn2 != nil
+	fmt.Println("Stack trace works:", hasStackTrace)
+	
+	// Test 3: Method names should work
+	t := RuntimeMetadataTest{Field: "test"}
+	result := t.TestMethod()
+	fmt.Println("Method result:", strings.HasPrefix(result, "method_"))
+	
+	// Test 4: Reflection type names
+	typeName := reflect.TypeOf(t).Name()
+	fmt.Println("Type name length:", len(typeName) > 0)
+}

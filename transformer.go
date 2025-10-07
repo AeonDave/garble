@@ -708,7 +708,10 @@ func (tf *transformer) obfuscateAndEmit(files []*ast.File, paths []string) ([]st
 			}
 			if basename == "symtab.go" {
 				updateMagicValue(file, magicValue())
-				updateEntryOffset(file, entryOffKey())
+				seed := feistelSeed()
+				var seedArray [32]byte
+				copy(seedArray[:], seed)
+				updateEntryOffsetFeistel(file, seedArray)
 			}
 		}
 		if err := tf.transformDirectives(file.Comments); err != nil {

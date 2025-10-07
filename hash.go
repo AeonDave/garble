@@ -5,15 +5,19 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"go/token"
 	"go/types"
 	"io"
 	mathrand "math/rand"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -205,6 +209,11 @@ func appendFlags(w io.Writer, forBuildHash bool) {
 	if literals.TestObfuscator != "" && forBuildHash {
 		_, _ = io.WriteString(w, literals.TestObfuscator)
 	}
+	// Always include a marker for Feistel encryption to ensure runtime is rebuilt
+	// when switching between Feistel and XOR implementations.
+	if forBuildHash {
+		_, _ = io.WriteString(w, " -entryoff=feistel")
+	}
 }
 
 func buildidOf(path string) (string, error) {
@@ -258,10 +267,68 @@ func magicValue() uint32 {
 	return runtimeHashWithCustomSalt([]byte("magic"))
 }
 
-// entryOffKey returns random entry offset key
-// on user specified seed or the runtime package's GarbleActionID.
-func entryOffKey() uint32 {
-	return runtimeHashWithCustomSalt([]byte("entryOffKey"))
+// feistelSeed returns a 32-byte seed for Feistel cipher encryption.
+// Used by both linker (encryption) and runtime (decryption).
+// Based on user-specified seed or runtime package's GarbleActionID.
+// The seed is cached in a file to ensure consistency across runtime compilation and linking.
+func feistelSeed() []byte {
+	if sharedCache == nil {
+		panic("feistelSeed: shared cache not initialized")
+	}
+	runtimePkg := sharedCache.ListedPackages["runtime"]
+	if runtimePkg == nil {
+		panic("feistelSeed: runtime package metadata not available")
+	}
+
+	var actionID []byte
+	if runtimePkg.BuildID != "" {
+		actionID = decodeBuildIDHash(splitActionID(runtimePkg.BuildID))
+	} else {
+		actionID = runtimePkg.GarbleActionID[:]
+	}
+
+	keyHasher := sha256.New()
+	keyHasher.Write(actionID)
+	if flagSeed.present() {
+		keyHasher.Write(flagSeed.bytes)
+	}
+	keyName := hex.EncodeToString(keyHasher.Sum(nil))
+
+	seedDir := filepath.Join(sharedCache.CacheDir, "feistel-seeds")
+	seedPath := filepath.Join(seedDir, keyName+".seed")
+	if data, err := os.ReadFile(seedPath); err == nil && len(data) == sha256.Size {
+		return data
+	}
+
+	if err := os.MkdirAll(seedDir, 0o755); err != nil {
+		panic(fmt.Sprintf("feistelSeed: failed to create seed directory: %v", err))
+	}
+
+	hasher.Reset()
+	hasher.Write(actionID)
+	if flagSeed.present() {
+		hasher.Write(flagSeed.bytes)
+	} else if len(sharedCache.BuildNonce) > 0 {
+		hasher.Write(sharedCache.BuildNonce)
+	} else {
+		nonce := make([]byte, sha256.Size)
+		if _, err := rand.Read(nonce); err != nil {
+			panic(fmt.Sprintf("feistelSeed: failed to read random nonce: %v", err))
+		}
+		hasher.Write(nonce)
+	}
+	hasher.Write([]byte("feistelSeed"))
+	seed := hasher.Sum(nil)
+
+	if len(seed) != sha256.Size {
+		panic("feistelSeed: invalid seed size")
+	}
+
+	if err := os.WriteFile(seedPath, seed, 0o600); err != nil {
+		panic(fmt.Sprintf("feistelSeed: failed to persist seed: %v", err))
+	}
+
+	return seed
 }
 
 func hashWithPackage(pkg *listedPackage, name string) string {

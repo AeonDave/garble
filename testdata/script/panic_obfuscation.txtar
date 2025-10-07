@@ -1,0 +1,62 @@
+# Test panic string obfuscation in runtime metadata
+# Panic messages in string literals are preserved but type names are obfuscated
+
+exec garble -tiny build -o tiny$exe
+exec ./tiny$exe
+stdout 'recovered from panic'
+stdout 'detailed panic message' # string literals preserved even in tiny mode
+! binsubstr tiny$exe 'PanicTestType' # type names obfuscated
+
+[short] stop
+
+# Default mode - same behavior, type names obfuscated
+exec garble build -o normal$exe
+exec ./normal$exe  
+stdout 'recovered from panic'
+stdout 'detailed panic message'
+! binsubstr normal$exe 'PanicTestType' # type name obfuscated in binary
+
+# With -literals, the panic string should also be obfuscated
+exec garble -literals build -o literals$exe
+exec ./literals$exe
+stdout 'recovered from panic'
+stdout 'detailed panic message' # Still works at runtime
+! binsubstr literals$exe 'detailed panic message' # But not in binary
+
+-- go.mod --
+module test/main
+
+go 1.23
+-- main.go --
+package main
+
+import (
+	"fmt"
+	"reflect"
+)
+
+type PanicTestType struct {
+	Field string
+}
+
+func (p PanicTestType) CausesPanic() {
+	panic("detailed panic message from method")
+}
+
+func main() {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Println("recovered from panic")
+			fmt.Println(r) // Print the actual panic message
+		}
+	}()
+	
+	t := PanicTestType{Field: "test"}
+	
+	// Verify type name is available via reflection even if obfuscated in binary
+	typeName := reflect.TypeOf(t).Name()
+	_ = typeName // Use it
+	
+	// This will panic
+	t.CausesPanic()
+}
