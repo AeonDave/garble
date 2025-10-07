@@ -4,17 +4,17 @@ Date: Mon, 6 Oct 2025 20:15:00 +0200
 Subject: [PATCH 3/3] add Feistel encryption for entryOff
 
 ---
- cmd/link/internal/ld/pcln.go | 83 ++++++++++++++++++++++++++++++++++--
- 1 file changed, 79 insertions(+), 4 deletions(-)
+ cmd/link/internal/ld/pcln.go | 95 ++++++++++++++++++++++++++++++++++--
+ 1 file changed, 85 insertions(+), 10 deletions(-)
 
 diff --git a/cmd/link/internal/ld/pcln.go b/cmd/link/internal/ld/pcln.go
-index b497573b15..a69a928929 100644
+index deded50..2c41377 100644
 --- a/cmd/link/internal/ld/pcln.go
 +++ b/cmd/link/internal/ld/pcln.go
 @@ -4,25 +4,23 @@
- 
+
  package ld
- 
+
 -import (
 -	"os"
 -)
@@ -41,12 +41,12 @@ index b497573b15..a69a928929 100644
  	"strings"
 +	"unicode"
  )
- 
+
  const funcSize = 11 * 4 // funcSize is the size of the _func object in runtime/runtime2.go
 @@ -728,6 +726,22 @@ func writeFuncs(ctxt *Link, sb *loader.SymbolBuilder, funcs []loader.Sym, inlSym
  	var pcsp, pcfile, pcline, pcinline loader.Sym
  	var pcdata []loader.Sym
- 
+
 +	// Retrieve and validate the Feistel seed from environment
 +	linkSeedBase64 := os.Getenv("LINK_SEED")
 +	if linkSeedBase64 == "" {
@@ -85,12 +85,12 @@ index b497573b15..a69a928929 100644
 +		sb.SetUint32(ctxt.Arch, int64(off), encrypted)
 +	}
  }
- 
+
  // pclntab initializes the pclntab symbol with
-@@ -916,6 +944,43 @@ const (
+@@ -916,6 +944,44 @@ const (
  	NOIDX         = 0x7fffffff
  )
- 
+
 +// Feistel cipher constants and implementation
 +const feistelRounds = 4
 +
@@ -121,18 +121,14 @@ index b497573b15..a69a928929 100644
 +
 +// feistelRound computes the round function: F(R, tweak, key)
 +func feistelRound(right uint16, tweak uint32, key uint32) uint16 {
-+	x := uint32(right) ^ tweak ^ key
-+	x = x*0x9e3779b1 + 0x7f4a7c15
-+	x = bits.RotateLeft32(x, int((key>>27)|1))
++	x := uint32(right)
++	x ^= tweak
++	x += key*0x9e3779b1 + 0x7f4a7c15
++	x = bits.RotateLeft32(x^key, int(key&31))
 +	x ^= x >> 16
-+	return uint16(x ^ (key >> 16))
++	return uint16(x)
 +}
 +
  // findfunctab generates a lookup table to quickly find the containing
  // function for a pc. See src/runtime/symtab.go:findfunc for details.
  func (ctxt *Link) findfunctab(state *pclntab, container loader.Bitmap) {
- 	// The last element of the functab serves as a sentinel, and it must be
- 	// filled with a valid function entry that matches the dummy entry we've
- 	// appended to the pclntab.
--- 
-2.48.1
