@@ -7,8 +7,8 @@ import (
 	mathrand "math/rand"
 	"strconv"
 
+	ah "github.com/AeonDave/garble/internal/asthelper"
 	"golang.org/x/tools/go/ssa"
-	ah "mvdan.cc/garble/internal/asthelper"
 )
 
 const (

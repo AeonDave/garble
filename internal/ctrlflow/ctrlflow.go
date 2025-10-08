@@ -11,10 +11,10 @@ import (
 	"strconv"
 	"strings"
 
+	ah "github.com/AeonDave/garble/internal/asthelper"
+	"github.com/AeonDave/garble/internal/ssa2ast"
 	"golang.org/x/tools/go/ast/astutil"
 	"golang.org/x/tools/go/ssa"
-	ah "mvdan.cc/garble/internal/asthelper"
-	"mvdan.cc/garble/internal/ssa2ast"
 )
 
 const (

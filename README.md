@@ -1,13 +1,26 @@
 # garble hardened
 
-Install from this repository (recommended for this fork):
+> **This is a security-hardened fork of [github.com/burrowers/garble](https://github.com/burrowers/garble)** with significant enhancements to obfuscation and anti-analysis capabilities. See [docs/SECURITY.md](docs/SECURITY.md) for a comprehensive overview of the security architecture and threat model.
 
-- Clone: https://github.com/AeonDave/garble
-- From the repo root: run `go install ./...`
+### Installation
 
-Notes
-- The module path remains `mvdan.cc/garble` for compatibility; using a local clone ensures you install this fork.
-- Alternatively, to install the upstream module, use `go install mvdan.cc/garble@latest`.
+Install from this repository:
+
+```sh
+go install github.com/AeonDave/garble@latest
+```
+
+Or clone and build locally:
+
+```sh
+git clone https://github.com/AeonDave/garble
+cd garble
+go install ./...
+```
+
+**Note**: This fork uses `github.com/AeonDave/garble` as its module path.
+
+### Overview
 
 Obfuscate Go code by wrapping the Go toolchain. Requires Go 1.25 or later.
 
@@ -20,17 +33,13 @@ Run `garble -h` to see all available commands and flags.
 
 ### Quick start
 
-1. Install from this repo:
-  - `git clone https://github.com/AeonDave/garble`
-  - `cd garble && go install ./...`
-2. Obfuscate your binary: `garble build ./cmd/myapp`.
-3. Make builds reproducible: provide both a seed and a build nonce.
-  - Example: `garble -seed=Z3JhZmY build ./cmd/myapp`
-  - And set `GARBLE_BUILD_NONCE` to a fixed base64 value when you need identical outputs across runs.
+1. Install: `go install github.com/AeonDave/garble@latest`
+2. Obfuscate your binary: `garble build ./cmd/myapp`
+3. Make builds reproducible: provide both a seed and a build nonce
+   - Example: `garble -seed=Z3JhZmY build ./cmd/myapp`
+   - Set `GARBLE_BUILD_NONCE` to a fixed base64 value for identical outputs across runs
 
 See [docs/FEATURE_TOGGLES.md](docs/FEATURE_TOGGLES.md) for a complete flag and environment reference.
-
-You can also use `go install mvdan.cc/garble@master` to install the latest development version.
 
 ### Purpose
 

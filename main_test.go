@@ -25,7 +25,7 @@ import (
 	"github.com/rogpeppe/go-internal/gotooltest"
 	"github.com/rogpeppe/go-internal/testscript"
 
-	ah "mvdan.cc/garble/internal/asthelper"
+	ah "github.com/AeonDave/garble/internal/asthelper"
 )
 
 var proxyURL string

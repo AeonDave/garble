@@ -10,7 +10,7 @@ import (
 	"encoding/gob"
 	"fmt"
 
-	"mvdan.cc/garble/internal/literals"
+	"github.com/AeonDave/garble/internal/literals"
 )
 
 const (

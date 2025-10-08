@@ -12,14 +12,16 @@ import (
 	"strconv"
 	"testing"
 
+	ah "github.com/AeonDave/garble/internal/asthelper"
 	"github.com/go-quicktest/qt"
 	"golang.org/x/tools/go/ast/astutil"
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
-	ah "mvdan.cc/garble/internal/asthelper"
 )
 
 // Test_generateTrashBlock tests correctness of generated trash code by generating and compiling a large number of statements
+//
+//goland:noinspection GoUnhandledErrorResult
 func Test_generateTrashBlock(t *testing.T) {
 	const (
 		seed      = 7777

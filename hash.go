@@ -21,7 +21,7 @@ import (
 	"strconv"
 	"strings"
 
-	"mvdan.cc/garble/internal/literals"
+	"github.com/AeonDave/garble/internal/literals"
 )
 
 const buildIDSeparator = "/"
@@ -202,6 +202,9 @@ func appendFlags(w io.Writer, forBuildHash bool) {
 	if flagSeed.present() {
 		_, _ = io.WriteString(w, " -seed=")
 		_, _ = io.WriteString(w, flagSeed.String())
+	}
+	if !flagCacheEncrypt {
+		_, _ = io.WriteString(w, " -no-cache-encrypt")
 	}
 	if flagControlFlowMode.Enabled() {
 		_, _ = io.WriteString(w, " -controlflow=")

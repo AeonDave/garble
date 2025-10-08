@@ -30,9 +30,9 @@ import (
 	"strings"
 	"time"
 
-	"mvdan.cc/garble/internal/ctrlflow"
-	"mvdan.cc/garble/internal/linker"
-	"mvdan.cc/garble/internal/literals"
+	"github.com/AeonDave/garble/internal/ctrlflow"
+	"github.com/AeonDave/garble/internal/linker"
+	"github.com/AeonDave/garble/internal/literals"
 )
 
 const actionGraphFileName = "action-graph.json"
@@ -692,7 +692,7 @@ func goVersionOK() bool {
 	if version.Compare(builtVersion, sharedCache.GoVersion) < 0 {
 		_, _ = fmt.Fprintf(os.Stderr, `
 garble was built with %q and can't be used with the newer %q; rebuild it with a command like:
-    go install mvdan.cc/garble@latest
+    go install github.com/AeonDave/garble@latest
 `[1:], builtVersionFull, toolchainVersionFull)
 		return false
 	}

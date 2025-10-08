@@ -79,7 +79,7 @@ filepath.Join(cache.OutputDir, "garble", garbleActionID+".gob")  // Persistent
 **Implementation Details**:
 ```go
 // Use existing ASCON from internal/literals/ascon.go
-import "mvdan.cc/garble/internal/literals"
+import "github.com/AeonDave/garble/internal/literals"
 
 func encryptCache(cache *sharedCacheType, key []byte) ([]byte, error) {
     // 1. Serialize cache with gob
@@ -410,7 +410,7 @@ import (
     "encoding/gob"
     "fmt"
     
-    "mvdan.cc/garble/internal/literals"
+    "github.com/AeonDave/garble/internal/literals"
 )
 
 // deriveCacheKey derives a 16-byte ASCON key from the user seed

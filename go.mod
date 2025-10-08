@@ -1,4 +1,4 @@
-module mvdan.cc/garble
+module github.com/AeonDave/garble
 
 go 1.25
 

@@ -11,8 +11,8 @@ import (
 	"go/types"
 	mathrand "math/rand"
 
+	ah "github.com/AeonDave/garble/internal/asthelper"
 	"golang.org/x/tools/go/ast/astutil"
-	ah "mvdan.cc/garble/internal/asthelper"
 )
 
 // maxSize is the upper limit of the size of string-like literals

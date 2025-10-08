@@ -6,7 +6,7 @@ import (
 	mathrand "math/rand"
 	"strconv"
 
-	ah "mvdan.cc/garble/internal/asthelper"
+	ah "github.com/AeonDave/garble/internal/asthelper"
 )
 
 const (

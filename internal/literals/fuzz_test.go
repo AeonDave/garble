@@ -16,8 +16,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/AeonDave/garble/internal/literals"
 	"github.com/go-quicktest/qt"
-	"mvdan.cc/garble/internal/literals"
 )
 
 // The fuzzing string is passed in as a string and []byte literal.
@@ -80,8 +80,8 @@ func FuzzObfuscate(f *testing.F) {
 		qt.Assert(t, qt.IsNil(err))
 		srcPath := f.Name()
 		t.Cleanup(func() {
-			f.Close()
-			os.Remove(srcPath)
+			_ = f.Close()
+			_ = os.Remove(srcPath)
 		})
 		err = printer.Fprint(f, fset, srcSyntax)
 		qt.Assert(t, qt.IsNil(err))
@@ -97,7 +97,7 @@ func FuzzObfuscate(f *testing.F) {
 		).CombinedOutput(); err != nil {
 			t.Fatalf("%v: %s", err, out)
 		}
-		t.Cleanup(func() { os.Remove(binPath) })
+		t.Cleanup(func() { _ = os.Remove(binPath) })
 
 		// Run the binary, expecting the output to match.
 		out, err := exec.Command(binPath).CombinedOutput()

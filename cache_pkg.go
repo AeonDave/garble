@@ -20,7 +20,7 @@ import (
 	"golang.org/x/tools/go/ast/astutil"
 	"golang.org/x/tools/go/ssa"
 
-	"mvdan.cc/garble/internal/literals"
+	"github.com/AeonDave/garble/internal/literals"
 )
 
 type (

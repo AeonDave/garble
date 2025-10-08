@@ -8,7 +8,7 @@ import (
 	"go/token"
 	mathrand "math/rand"
 
-	ah "mvdan.cc/garble/internal/asthelper"
+	ah "github.com/AeonDave/garble/internal/asthelper"
 )
 
 type simple struct{}
