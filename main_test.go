@@ -173,6 +173,9 @@ func createFile(ts *testscript.TestScript, path string) *os.File {
 // Note that tests should almost never use this; it's currently only used to
 // work around a low-level Go syscall race on Linux.
 func sleep(ts *testscript.TestScript, neg bool, args []string) {
+	if neg {
+		ts.Fatalf("unsupported: ! sleep")
+	}
 	if len(args) != 1 {
 		ts.Fatalf("usage: sleep duration")
 	}
@@ -494,6 +497,39 @@ func TestFilterForwardBuildFlags(t *testing.T) {
 	}
 }
 
+func TestSanitizeLinkerFlags(t *testing.T) {
+	tests := []struct {
+		name    string
+		flags   []string
+		want    []string
+		wantMap map[string]string
+	}{
+		{
+			name:    "inline assignment",
+			flags:   []string{"-ldflags=-X=main.version=secret -s"},
+			want:    []string{"-ldflags=-X=main.version= -s"},
+			wantMap: map[string]string{"main.version": "secret"},
+		},
+		{
+			name:    "separate argument",
+			flags:   []string{"-ldflags", "-X example.com/app.Build=deadbeef"},
+			want:    []string{"-ldflags", "-X example.com/app.Build="},
+			wantMap: map[string]string{"example.com/app.Build": "deadbeef"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sharedCache = &sharedCacheType{}
+			got, err := sanitizeLinkerFlags(tt.flags)
+			if err != nil {
+				t.Fatalf("sanitizeLinkerFlags error: %v", err)
+			}
+			qt.Assert(t, qt.DeepEquals(got, tt.want))
+			qt.Assert(t, qt.DeepEquals(sharedCache.LinkerInjectedStrings, tt.wantMap))
+		})
+	}
+}
 func TestFlagValue(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

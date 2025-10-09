@@ -330,6 +330,11 @@ type obfuscator interface {
     obfuscate(rand *mathrand.Rand, data []byte) *ast.BlockStmt
 }
 
+// Pre-pass eseguito in transformer.go
+// 1. Analizza le costanti di package (computeConstTransforms)
+// 2. Salta quelle richieste da contesti costanti (array len, iota, switch case)
+// 3. Converte le restanti in variabili di package durante la preparazione (rewriteConstDecls)
+
 // 1. ASCON Obfuscator (crittograficamente sicuro)
 type asconObfuscator struct{}
     // Cifra letterali con ASCON-128
@@ -355,6 +360,24 @@ Literal Size < 2KB?
     ├─ Yes → ASCON, Simple, Split, Swap (random choice)
     └─ No  → Simple only (per performance)
 ```
+
+**Pre-elaborazione delle costanti** (`transformer.go`):
+- `computeConstTransforms` costruisce una mappa `*types.Const → constTransform` tracciando gli `Ident` di utilizzo e scartando costanti esportate, tipizzate alias o vincolate da contesti costanti.
+- `rewriteConstDecls` riscrive i `GenDecl` `const` eleggibili in `var`, aggiornando `types.Info.Defs/Uses` così che gli obfuscatori vedano variabili runtime e possano applicare la cifratura.
+- Le costanti convertite ereditano doc comment e trailing comment originali, preservando la documentazione per `-debugdir`/reverse mode.
+
+**Sanitizzazione `-ldflags -X`** (`main.go` → `transformer.go`):
+- `sanitizeLinkerFlags()` intercetta i flag `-ldflags` prima che raggiungano il toolchain Go
+- Estrae tutte le assegnazioni `-X package.var=value` in una mappa `LinkerInjectedStrings`
+- Riscrive i flag con valori vuoti: `-X package.var=` (linker non vede mai il plaintext)
+- Durante la compilazione del package target, `injectLinkerVariableInit()` genera una funzione `init()`:
+  ```go
+  func init() {
+      varName = <obfuscated_literal("original_value")>
+  }
+  ```
+- Il valore viene cifrato con ASCON-128 o Simple obfuscator come qualsiasi altro letterale
+- **Risultato**: API keys, secrets, versioni iniettati via linker sono completamente protetti nel binario finale
 
 #### 3.5.2 ctrlflow/ - Control Flow Obfuscation
 

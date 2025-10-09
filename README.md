@@ -126,10 +126,23 @@ This feature is opt-in, as it can cause slow-downs depending on the input code a
 Garble uses multiple obfuscation strategies for defense-in-depth:
 * ASCON-128 authenticated encryption with inline decryption code (used frequently)
 * Reversible simple obfuscator for small and performance-sensitive cases
+* Compile-time constant rewriting: eligible string constants are downgraded to package-scoped vars so they can flow through the same literal obfuscators
 
 Notes and limits
-- Literals used in constant expressions cannot be obfuscated, since they are folded at compile time (e.g. values in a `const` block).
-- Strings injected via `-ldflags=-X` are not currently covered by `-literals`.
+- String constants that must remain compile-time values (array lengths, `iota` math, `case` labels, etc.) are preserved to keep the program valid and may stay in plaintext.
+- Strings injected via `-ldflags=-X` are **fully protected**: the flag is sanitized at parse time, and the value is rehydrated as an obfuscated init-time assignment (ASCON-128 or multi-layer simple obfuscation).
+
+**Example - Protecting API Keys**:
+```sh
+# Traditional build - API key visible in binary
+go build -ldflags="-X main.apiKey=sk_live_ABC123"
+strings binary | grep sk_live  # ❌ Found in plaintext!
+
+# Garble build - API key encrypted
+garble -literals build -ldflags="-X main.apiKey=sk_live_ABC123"
+strings binary | grep sk_live  # ✅ Not found - encrypted!
+# Runtime still works: the key is decrypted during init()
+```
 
 ### Reversible obfuscation
 

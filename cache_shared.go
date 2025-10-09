@@ -34,6 +34,10 @@ type sharedCacheType struct {
 
 	CacheDir string // absolute path to the GARBLE_CACHE directory being used
 
+	// LinkerInjectedStrings stores plaintext values requested via -ldflags=-X.
+	// The key is in the form "import/path.VarName".
+	LinkerInjectedStrings map[string]string
+
 	// ListedPackages contains data obtained via 'go list -json -export -deps'.
 	// This allows us to obtain the non-obfuscated export data of all dependencies,
 	// useful for type checking of the packages as we obfuscate them.

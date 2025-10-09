@@ -1,0 +1,46 @@
+exec go build
+exec ./consts$exe
+stdout 'hide-me 4'
+rm consts$exe
+
+exec garble -literals build
+exec ./consts$exe
+stdout 'hide-me 4'
+! binsubstr consts$exe 'hide-mecase-only'
+! binsubstr consts$exe 'case-only'
+
+-- go.mod --
+module test/literals/consts
+
+go 1.23
+
+-- main.go --
+package main
+
+import "fmt"
+
+const (
+	runtimeSecret, caseLabel = "hide-me", "case-only"
+	arrayLen             = "XXXX"
+)
+
+var sink = runtimeSecret + caseLabel
+
+var arr = [len(arrayLen)]byte{}
+
+func main() {
+	if wantsConst("other") {
+		fmt.Println("unexpected")
+		return
+	}
+	fmt.Println(runtimeSecret, len(arr))
+	_ = sink
+}
+
+func wantsConst(s string) bool {
+	switch s {
+	case caseLabel:
+		return true
+	}
+	return false
+}

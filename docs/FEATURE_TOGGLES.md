@@ -6,7 +6,7 @@ This reference consolidates every command-line flag and environment variable tha
 
 | Flag | Values / type | Default | Controls | Notes & interactions |
 | --- | --- | --- | --- | --- |
-| `-literals` | boolean | `false` | Enables literal obfuscation (strings, numbers, const data) via `internal/literals`. | Affects build outputs and cache keys. No environment alias. |
+| `-literals` | boolean | `false` | Enables literal obfuscation (strings, numbers, eligible string constants, `-ldflags -X` injections) via `internal/literals`. | Performs a pre-pass that rewrites safe `const` strings into vars; affects build outputs and cache keys. No environment alias. |
 | `-tiny` | boolean | `false` | Optimises for binary size at the cost of reversibility. | Propagates as `GARBLE_LINK_TINY=true` for the patched linker. Combines with `-reversible` but favours smaller binaries. |
 | `-debug` | boolean | `false` | Emits verbose obfuscation logs to stderr. | Does not change build artefacts; skipped in build cache keys. |
 | `-debugdir` | string (path) | unset | Writes obfuscated Go sources to the given directory. | Directory is recreated on each build (sentinel `.garble-debugdir`). Forces `go` to rebuild dependencies (`-a`). |

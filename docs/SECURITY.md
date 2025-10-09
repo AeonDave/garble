@@ -473,15 +473,111 @@ Selection factors:
 
 #### Const Expressions
 ```go
-const VERSION = "1.0"  // ❌ Cannot obfuscate (compile-time constant)
+const VERSION = "1.0"          // ✅ Rewritten to var + obfuscated when no compile-time dependency exists
+const SIZE = len(VERSION)       // ⚠️ Must stay const (array length)
+const CaseLabel = "case-only"  // ⚠️ Must stay const (switch label)
 ```
-**Reason**: Resolved at compile time; no runtime expression possible.
+**Reason**: Garble rewrites string constants into vars when they are only used at runtime. Values that participate in compile-time contexts (array lengths, `iota` arithmetic, case clauses, etc.) must remain constants to keep the program valid and may stay in plaintext.
 
-#### Linker-Injected Strings
+#### Linker-Injected Strings (`-ldflags -X`)
+
+**Status**: ✅ **Fully Protected** since October 2025
+
+Go's `-ldflags -X` flag allows injecting string values at link time:
+
 ```sh
-go build -ldflags="-X main.version=1.0"  # ❌ Not currently covered
+go build -ldflags="-X main.apiKey=sk_live_51234567890abcdefABCDEF"
 ```
-**Reason**: Injected after AST transformation phase.
+
+**Traditional Vulnerability**: These strings appear in plaintext in the binary, easily extractable with `strings` or hex editors.
+
+**Garble Protection Pipeline**:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Phase 1: FLAG SANITIZATION (main.go)                       │
+├──────────────────────────────────────────────────────────────┤
+│  Input:  -ldflags="-X main.apiKey=sk_live_51234567890..."    │
+│                                     └─────────┬────────┘      │
+│                           Extracted & cached  │               │
+│                                              ▼               │
+│  sharedCache.LinkerInjectedStrings["main.apiKey"] =         │
+│      "sk_live_51234567890abcdefABCDEF"                       │
+│                                              │               │
+│                    Sanitized flag rewritten  │               │
+│                                              ▼               │
+│  Output: -ldflags="-X main.apiKey="  ← Empty to linker!     │
+│                                                              │
+│  ✅ Go toolchain NEVER sees the original value               │
+└──────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────┐
+│  Phase 2: RUNTIME INJECTION (transformer.go)                 │
+├──────────────────────────────────────────────────────────────┤
+│  During package compilation, Garble injects:                 │
+│                                                              │
+│  func init() {                                               │
+│      apiKey = <obfuscated_literal>("sk_live_51234567...")>  │
+│  }                                                           │
+│                                                              │
+│  ✅ Uses identical obfuscation as normal string literals     │
+└──────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────┐
+│  Phase 3: ENCRYPTION (literals.go)                           │
+├──────────────────────────────────────────────────────────────┤
+│  Value encrypted with ASCON-128 (~60%) or Simple (~40%):    │
+│                                                              │
+│  • ASCON: AES-like encryption + inline decrypt function     │
+│  • Simple: XOR + shuffle + split + index remapping          │
+│                                                              │
+│  ✅ Binary contains only ciphertext + decrypt code           │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**Supported Formats**:
+```sh
+# All three -X formats are protected:
+-ldflags="-X=main.version=1.0"
+-ldflags="-X main.version=1.0"
+-ldflags="-X \"main.message=hello world\""
+```
+
+**Security Guarantees**:
+
+| Attack Vector | Normal Build | Garble Build |
+|---------------|--------------|--------------|
+| `strings binary \| grep apiKey` | ❌ Plaintext found | ✅ Not found |
+| Static analysis | ❌ Immediate extraction | ⚠️ Requires decrypt reverse |
+| Hex editor search | ❌ Visible bytes | ✅ Only ciphertext |
+| Memory dump (runtime) | ⚠️ Always plaintext | ⚠️ Decrypted in memory |
+
+**Real-World Example**:
+
+```go
+package main
+var apiKey = "default-key"  // Will be replaced via -ldflags
+
+// Build without Garble
+$ go build -ldflags="-X main.apiKey=sk_live_ABC123"
+$ strings binary | grep sk_live
+sk_live_ABC123  ← Exposed!
+
+// Build with Garble
+$ garble -literals build -ldflags="-X main.apiKey=sk_live_ABC123"
+$ strings binary | grep sk_live
+(no results)  ← Protected!
+
+// But runtime still works:
+$ ./binary
+Using API key: sk_live_ABC123  ← Decrypted at runtime ✅
+```
+
+**Implementation Details**:
+- `main.go`: `sanitizeLinkerFlags()` - extracts and sanitizes flags
+- `transformer.go`: `injectLinkerVariableInit()` - generates init() function
+- `internal/literals/literals.go`: `Builder.ObfuscateStringLiteral()` - encrypts value
+- Tests: `testdata/script/ldflags.txtar` - end-to-end verification
 
 ### Current Status
 
@@ -490,8 +586,8 @@ go build -ldflags="-X main.version=1.0"  # ❌ Not currently covered
 | String literals | ✅ Obfuscated | ASCON + simple mix |
 | Numeric literals | ✅ Obfuscated | When `-literals` enabled |
 | Byte slices | ✅ Obfuscated | Treated as literals |
-| Const expressions | ❌ Not covered | Compile-time resolved |
-| -ldflags -X strings | ❌ Not covered | Injected post-transform |
+| Const expressions | ⚠️ Partially covered | Safe string consts are rewritten; compile-time contexts remain const |
+| -ldflags -X strings | ✅ Covered | Sanitised at flag parse; runtime decrypt |
 | Irreversible simple | ⚠️ Planned | Currently uses reversible path |
 
 ### Implementation References
@@ -920,7 +1016,8 @@ Control-flow obfuscation can impact:
 | Reflection oracle exploitation | Easy → N/A | Critical | ✅ Eliminated (Default) |
 | Cache offline analysis | Easy → Hard | Medium | ✅ Mitigated (ASCON Encryption) |
 | Dynamic runtime tracing | Easy | Variable | ⚠️ By Design (Observable) |
-| Const/ldflags extraction | Easy | Medium | ❌ Known Gap |
+| Const expression extraction | Easy | Medium | ⚠️ Partial Gap (compile-time contexts) |
+| -ldflags -X plaintext leakage | Easy | Medium | ✅ Mitigated (Sanitized + obfuscated) |
 | Control-flow analysis | Medium | Medium | ⚠️ Optional (CF modes) |
 
 ### Detailed Mitigation Matrix
@@ -929,7 +1026,8 @@ Control-flow obfuscation can impact:
 |---------------|---------------------|---------------|-------|
 | **Static Symbol Table Analysis** | Feistel-encrypted entry offsets with per-build keys and per-function tweak | Dynamic tracing observes actual runtime behavior | Format-preserving; 128-bit keyspace |
 | **Cross-Build Pattern Matching** | SHA-256 seed+nonce mixing; cryptographically random nonce per build | If seed and nonce are fixed (reproducibility), correlation possible | Intentional for deterministic builds |
-| **String/Literal Scraping** | ASCON-128 inline encryption (~60%); multi-layer simple obfuscator (~40%) | Const expressions and `-ldflags -X` strings not covered | Known limitation; future enhancement |
+| **String/Literal Scraping** | ASCON-128 inline encryption (~60%); multi-layer simple obfuscator (~40%) | Compile-time-only consts remain in plaintext | Remaining gap limited to array lengths / case labels |
+| **Injected -ldflags Strings** | CLI sanitization + shared-cache rehydration via literal builder | Plaintext exists only transiently in garble parent process | Sanitized flags never reach toolchain or final binary |
 | **Reflection Name Oracle** | `_originalNamePairs` array empty by default | Opting into `-reversible` re-introduces oracle by design | Security vs. debugging trade-off |
 | **Cache Inspection/Tampering** | ASCON-128 encryption at rest with 128-bit authentication tag | Shared ephemeral cache plaintext (deleted after build) | Tag verification prevents poisoning |
 | **Known-Plaintext Attack on Literals** | Per-literal random keys/nonces; ASCON authentication | Requires recovering per-literal key (infeasible) | Each literal independently secured |
@@ -945,8 +1043,9 @@ Control-flow obfuscation can impact:
 **Defenses**:
 - ✅ Feistel encryption hides function mappings
 - ✅ ASCON/Simple encryption protects literals
+- ✅ Sanitized `-ldflags -X` strings are rehydrated via obfuscated init-time assignments
 - ✅ Empty reflection map eliminates name oracle
-- ⚠️ Const expressions remain visible (known gap)
+- ⚠️ String constants required at compile time (array lengths, switch labels, `iota` math) remain visible
 
 **Result**: Significantly harder; requires reverse engineering each obfuscation layer.
 
@@ -991,16 +1090,34 @@ Control-flow obfuscation can impact:
 
 | Type | Status | Reason | Priority |
 |------|--------|--------|----------|
-| Const expressions | ❌ Not covered | Compile-time folding | Medium |
-| `-ldflags -X` strings | ❌ Not covered | Injected post-AST | Medium |
+| Compile-time const contexts | ⚠️ Partial | Array lengths, case labels, iota must stay const | Medium |
+| `-ldflags -X` strings | ✅ **Covered** | **Sanitized at CLI, encrypted via init()** | ✅ Complete |
 | Runtime-generated strings | ❌ Not covered | Created dynamically | Low |
 
-**Example**:
+**Example of remaining gap**:
 ```go
-const VERSION = "1.0"  // Visible in binary
+const arraySize = "XXXX"
+var arr = [len(arraySize)]byte{}  // ⚠️ Must stay const (array length)
+
+const caseLabel = "case-only"
+switch x {
+case caseLabel:  // ⚠️ Must stay const (switch case)
+    return true
+}
 ```
 
-**Planned**: Explore compile-time expression rewriting or interception at link time.
+**What IS protected**:
+```go
+const runtimeSecret = "hide-me"  // ✅ Converted to var + encrypted
+var sink = runtimeSecret         // ✅ Value obfuscated at runtime
+
+// Via -ldflags
+var apiKey = "default"
+// Build: garble -literals build -ldflags="-X main.apiKey=secret123"
+// ✅ "secret123" is ASCON-encrypted, never appears in plaintext
+```
+
+**Planned**: Advanced const-folding analysis to detect more safe-to-rewrite constants.
 
 #### 2. Irreversible Simple Obfuscator
 

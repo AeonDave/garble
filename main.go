@@ -431,6 +431,10 @@ This command wraps "go %s". Below is its help:
 
 	// Note that we also need to pass build flags to 'go list', such
 	// as -tags.
+	flags, err = sanitizeLinkerFlags(flags)
+	if err != nil {
+		return nil, err
+	}
 	sharedCache.ForwardBuildFlags, _ = filterForwardBuildFlags(flags)
 	if command == "test" {
 		sharedCache.ForwardBuildFlags = append(sharedCache.ForwardBuildFlags, "-test")
@@ -759,6 +763,99 @@ func filterForwardBuildFlags(flags []string) (filtered []string, firstUnknown st
 		}
 	}
 	return filtered, firstUnknown
+}
+
+type ldflagEntry struct {
+	fullName string
+	value    string
+}
+
+// sanitizeLinkerFlags extracts plaintext -X assignments and replaces them with
+// empty assignments so that the linker never sees the original value. The
+// plaintext is stored in sharedCache.LinkerInjectedStrings for later runtime
+// obfuscation. The returned slice is a sanitized copy of the provided flags.
+func sanitizeLinkerFlags(flags []string) ([]string, error) {
+	sharedCache.LinkerInjectedStrings = make(map[string]string)
+
+	sanitized := append([]string(nil), flags...)
+
+	for i := 0; i < len(sanitized); i++ {
+		arg := sanitized[i]
+		switch {
+		case strings.HasPrefix(arg, "-ldflags="):
+			value := strings.TrimPrefix(arg, "-ldflags=")
+			rewritten, entries, err := sanitizeLdflagsValue(value)
+			if err != nil {
+				return nil, err
+			}
+			for _, entry := range entries {
+				sharedCache.LinkerInjectedStrings[entry.fullName] = entry.value
+			}
+			sanitized[i] = "-ldflags=" + rewritten
+
+		case arg == "-ldflags":
+			if i+1 >= len(sanitized) {
+				continue
+			}
+			rewritten, entries, err := sanitizeLdflagsValue(sanitized[i+1])
+			if err != nil {
+				return nil, err
+			}
+			for _, entry := range entries {
+				sharedCache.LinkerInjectedStrings[entry.fullName] = entry.value
+			}
+			sanitized[i+1] = rewritten
+		}
+	}
+
+	return sanitized, nil
+}
+
+func sanitizeLdflagsValue(value string) (string, []ldflagEntry, error) {
+	if strings.TrimSpace(value) == "" {
+		return value, nil, nil
+	}
+
+	parts, err := cmdgoQuotedSplit(value)
+	if err != nil {
+		return "", nil, err
+	}
+
+	entries := make([]ldflagEntry, 0, len(parts))
+
+	record := func(fullName, plain string) {
+		entries = append(entries, ldflagEntry{fullName: fullName, value: plain})
+	}
+
+	for i := 0; i < len(parts); i++ {
+		part := parts[i]
+		if strings.HasPrefix(part, "-X=") {
+			payload := strings.TrimPrefix(part, "-X=")
+			fullName, plain, ok := strings.Cut(payload, "=")
+			if !ok {
+				continue
+			}
+			record(fullName, plain)
+			parts[i] = "-X=" + fullName + "="
+			continue
+		}
+		if part == "-X" && i+1 < len(parts) {
+			payload := parts[i+1]
+			fullName, plain, ok := strings.Cut(payload, "=")
+			if !ok {
+				continue
+			}
+			record(fullName, plain)
+			parts[i+1] = fullName + "="
+		}
+	}
+
+	joined, err := cmdgoQuotedJoin(parts)
+	if err != nil {
+		return "", nil, err
+	}
+
+	return joined, entries, nil
 }
 
 // splitFlagsFromFiles splits args into a list of flag and file arguments. Since

@@ -39,45 +39,28 @@ import (
 func computeLinkerVariableStrings(pkg *types.Package) (map[*types.Var]string, error) {
 	linkerVariableStrings := make(map[*types.Var]string)
 
-	// TODO: this is a linker flag that affects how we obfuscate a package at
-	// compile time. Note that, if the user changes ldflags, then Go may only
-	// re-link the final binary, without re-compiling any packages at all.
-	// It's possible that this could result in:
-	//
-	//    garble -literals build -ldflags=-X=pkg.name=before # name="before"
-	//    garble -literals build -ldflags=-X=pkg.name=after  # name="before" as cached
-	//
-	// We haven't been able to reproduce this problem for now,
-	// but it's worth noting it and keeping an eye out for it in the future.
-	// If we do confirm this theoretical bug,
-	// the solution will be to either find a different solution for -literals,
-	// or to force including -ldflags into the build cache key.
-	ldflags, err := cmdgoQuotedSplit(flagValue(sharedCache.ForwardBuildFlags, "-ldflags"))
-	if err != nil {
-		return nil, err
+	if len(sharedCache.LinkerInjectedStrings) == 0 {
+		return linkerVariableStrings, nil
 	}
-	flagValueIter(ldflags, "-X", func(val string) {
-		// val is in the form of "foo.com/bar.name=value".
-		fullName, stringValue, found := strings.Cut(val, "=")
-		if !found {
-			return // invalid
+
+	for fullName, stringValue := range sharedCache.LinkerInjectedStrings {
+		idx := strings.LastIndex(fullName, ".")
+		if idx <= 0 {
+			continue
 		}
+		path, name := fullName[:idx], fullName[idx+1:]
 
-		// fullName is "foo.com/bar.name"
-		i := strings.LastIndexByte(fullName, '.')
-		path, name := fullName[:i], fullName[i+1:]
-
-		// Note that package main always has import path "main" as part of a build.
 		if path != pkg.Path() && (path != "main" || pkg.Name() != "main") {
-			return // not the current package
+			continue
 		}
 
 		obj, _ := pkg.Scope().Lookup(name).(*types.Var)
 		if obj == nil {
-			return // no such variable; skip
+			continue
 		}
 		linkerVariableStrings[obj] = stringValue
-	})
+	}
+
 	return linkerVariableStrings, nil
 }
 
@@ -297,6 +280,14 @@ type transformer struct {
 	usedAllImportsFiles map[*ast.File]bool
 
 	actionGraph []buildAction
+
+	linkerInitInjected bool
+	constTransforms    map[*types.Const]*constTransform
+}
+
+type constTransform struct {
+	uses   []*ast.Ident
+	varObj *types.Var
 }
 
 func (tf *transformer) writeSourceFile(basename, obfuscated string, content []byte) (string, error) {
@@ -681,13 +672,19 @@ func (tf *transformer) applyControlFlowTransforms(files *[]*ast.File, paths *[]s
 
 func (tf *transformer) prepareObfuscationState(files []*ast.File, ssaPkg *ssa.Package) error {
 	var err error
+	if tf.linkerVariableStrings, err = computeLinkerVariableStrings(tf.pkg); err != nil {
+		return err
+	}
 	if tf.curPkgCache, err = loadPkgCache(tf.curPkg, tf.pkg, files, tf.info, ssaPkg); err != nil {
 		return err
 	}
 	tf.fieldToStruct = computeFieldToStruct(tf.info)
-	if flagLiterals {
-		if tf.linkerVariableStrings, err = computeLinkerVariableStrings(tf.pkg); err != nil {
-			return err
+	if flagLiterals && tf.curPkg.ToObfuscate {
+		tf.constTransforms = computeConstTransforms(files, tf.info, tf.pkg)
+		if len(tf.constTransforms) > 0 {
+			for _, file := range files {
+				tf.rewriteConstDecls(file)
+			}
 		}
 	}
 	return nil
@@ -742,6 +739,267 @@ func (tf *transformer) obfuscateAndEmit(files []*ast.File, paths []string) ([]st
 		newPaths = append(newPaths, path)
 	}
 	return newPaths, nil
+}
+func computeConstTransforms(files []*ast.File, info *types.Info, pkg *types.Package) map[*types.Const]*constTransform {
+	parentMaps := make(map[*ast.File]map[ast.Node]ast.Node, len(files))
+	constUses := make(map[*types.Const][]*ast.Ident)
+	identFile := make(map[*ast.Ident]*ast.File)
+
+	for _, file := range files {
+		parentMaps[file] = buildParentMap(file)
+		ast.Inspect(file, func(n ast.Node) bool {
+			ident, ok := n.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			if info.Defs[ident] != nil {
+				return true
+			}
+			obj, ok := info.Uses[ident].(*types.Const)
+			if !ok || obj.Pkg() != pkg {
+				return true
+			}
+			constUses[obj] = append(constUses[obj], ident)
+			identFile[ident] = file
+			return true
+		})
+	}
+
+	requiresConst := make(map[*types.Const]bool, len(constUses))
+	for obj, idents := range constUses {
+		for _, ident := range idents {
+			if isConstContext(ident, parentMaps[identFile[ident]]) {
+				requiresConst[obj] = true
+				break
+			}
+		}
+	}
+
+	transforms := make(map[*types.Const]*constTransform)
+	for _, file := range files {
+		for _, decl := range file.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				if len(vs.Names) == 0 || len(vs.Values) != len(vs.Names) {
+					continue
+				}
+				for idx, name := range vs.Names {
+					obj, ok := info.Defs[name].(*types.Const)
+					if !ok || obj.Pkg() != pkg {
+						continue
+					}
+					if obj.Exported() {
+						continue
+					}
+					if requiresConst[obj] {
+						continue
+					}
+					uses := constUses[obj]
+					if len(uses) == 0 {
+						continue
+					}
+					if !isBasicStringConst(obj) {
+						continue
+					}
+					if lit, ok := vs.Values[idx].(*ast.BasicLit); !ok || lit.Kind != token.STRING {
+						continue
+					}
+					if _, seen := transforms[obj]; !seen {
+						transforms[obj] = &constTransform{uses: uses}
+					}
+				}
+			}
+		}
+	}
+
+	return transforms
+}
+
+func buildParentMap(root ast.Node) map[ast.Node]ast.Node {
+	parents := make(map[ast.Node]ast.Node)
+	var stack []ast.Node
+	ast.Inspect(root, func(n ast.Node) bool {
+		if n == nil {
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+			return false
+		}
+		if len(stack) > 0 {
+			parents[n] = stack[len(stack)-1]
+		}
+		stack = append(stack, n)
+		return true
+	})
+	return parents
+}
+
+func isConstContext(node ast.Node, parents map[ast.Node]ast.Node) bool {
+	if parents == nil {
+		return false
+	}
+	child := node
+	for parent := parents[child]; parent != nil; child, parent = parent, parents[parent] {
+		switch p := parent.(type) {
+		case *ast.GenDecl:
+			if p.Tok == token.CONST {
+				return true
+			}
+		case *ast.CaseClause:
+			for _, expr := range p.List {
+				if expr == child {
+					return true
+				}
+			}
+		case *ast.ArrayType:
+			if p.Len == child {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isBasicStringConst(obj *types.Const) bool {
+	typ := obj.Type()
+	// Exclude named types (type aliases) - they may be exported or have special semantics
+	if _, isNamed := typ.(*types.Named); isNamed {
+		return false
+	}
+	// Accept only basic string types (string or untyped string)
+	if basic, ok := typ.(*types.Basic); ok {
+		switch basic.Kind() {
+		case types.String, types.UntypedString:
+			return true
+		}
+	}
+	return false
+}
+
+func (tf *transformer) rewriteConstDecls(file *ast.File) {
+	if len(tf.constTransforms) == 0 {
+		return
+	}
+	var newDecls []ast.Decl
+	changed := false
+
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.CONST {
+			newDecls = append(newDecls, decl)
+			continue
+		}
+
+		var keptSpecs []ast.Spec
+		var inserted []ast.Decl
+
+		for _, spec := range gen.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok || len(vs.Names) == 0 {
+				keptSpecs = append(keptSpecs, spec)
+				continue
+			}
+			if len(vs.Values) != len(vs.Names) {
+				keptSpecs = append(keptSpecs, spec)
+				continue
+			}
+
+			var keptNames []*ast.Ident
+			var keptValues []ast.Expr
+
+			for idx, name := range vs.Names {
+				obj, ok := tf.info.Defs[name].(*types.Const)
+				if !ok {
+					keptNames = append(keptNames, name)
+					keptValues = append(keptValues, vs.Values[idx])
+					continue
+				}
+				transform, ok := tf.constTransforms[obj]
+				if !ok {
+					keptNames = append(keptNames, name)
+					keptValues = append(keptValues, vs.Values[idx])
+					continue
+				}
+				lit, ok := vs.Values[idx].(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					keptNames = append(keptNames, name)
+					keptValues = append(keptValues, vs.Values[idx])
+					continue
+				}
+
+				changed = true
+
+				varDoc := vs.Doc
+				if len(keptNames) > 0 {
+					varDoc = nil
+				} else {
+					vs.Doc = nil
+				}
+				varComment := vs.Comment
+				if varComment != nil {
+					vs.Comment = nil
+				}
+
+				varSpec := &ast.ValueSpec{
+					Doc:     varDoc,
+					Comment: varComment,
+					Names:   []*ast.Ident{name},
+					Values:  []ast.Expr{vs.Values[idx]},
+				}
+				varDecl := &ast.GenDecl{
+					Tok:   token.VAR,
+					Specs: []ast.Spec{varSpec},
+				}
+				if name.Pos().IsValid() {
+					varDecl.TokPos = name.Pos()
+				} else {
+					varDecl.TokPos = gen.TokPos
+				}
+				inserted = append(inserted, varDecl)
+
+				newType := obj.Type()
+				if basic, ok := newType.(*types.Basic); ok && basic.Kind() == types.UntypedString {
+					newType = types.Typ[types.String]
+				}
+				newVar := types.NewVar(obj.Pos(), obj.Pkg(), obj.Name(), newType)
+				tf.info.Defs[name] = newVar
+				transform.varObj = newVar
+				for _, use := range transform.uses {
+					tf.info.Uses[use] = newVar
+				}
+				transform.uses = nil
+			}
+
+			if len(keptNames) > 0 {
+				vs.Names = keptNames
+				if len(keptValues) > 0 {
+					vs.Values = keptValues
+				} else {
+					vs.Values = nil
+				}
+				keptSpecs = append(keptSpecs, vs)
+			}
+		}
+
+		if len(keptSpecs) > 0 {
+			gen.Specs = keptSpecs
+			newDecls = append(newDecls, gen)
+		}
+		if len(inserted) > 0 {
+			newDecls = append(newDecls, inserted...)
+		}
+	}
+
+	if changed {
+		file.Decls = newDecls
+	}
 }
 
 // transformDirectives rewrites //go:linkname toolchain directives in comments
@@ -1127,11 +1385,20 @@ func (tf *transformer) transformGoFile(file *ast.File) *ast.File {
 	// We can't obfuscate literals in the runtime and its dependencies,
 	// because obfuscated literals sometimes escape to heap,
 	// and that's not allowed in the runtime itself.
+	var litBuilder *literals.Builder
 	if flagLiterals && tf.curPkg.ToObfuscate {
-		file = literals.Obfuscate(tf.obfRand, file, tf.info, tf.linkerVariableStrings, randomName)
+		litBuilder = literals.NewBuilder(tf.obfRand, file, randomName)
+		file = litBuilder.ObfuscateFile(file, tf.info, tf.linkerVariableStrings)
 
 		// some imported constants might not be needed anymore, remove unnecessary imports
 		tf.useAllImports(file)
+	} else if len(tf.linkerVariableStrings) > 0 {
+		litBuilder = literals.NewBuilder(tf.obfRand, file, randomName)
+	}
+
+	if litBuilder != nil {
+		tf.injectLinkerVariableInit(litBuilder, file)
+		litBuilder.Finalize(file)
 	}
 
 	pre := func(cursor *astutil.Cursor) bool {
@@ -1327,6 +1594,67 @@ func (tf *transformer) transformGoFile(file *ast.File) *ast.File {
 	}
 
 	return astutil.Apply(file, pre, post).(*ast.File)
+}
+
+func (tf *transformer) injectLinkerVariableInit(builder *literals.Builder, file *ast.File) {
+	if tf.linkerInitInjected || len(tf.linkerVariableStrings) == 0 {
+		return
+	}
+
+	type linkerAssignment struct {
+		obj      *types.Var
+		fullName string
+		value    string
+	}
+
+	assignments := make([]linkerAssignment, 0, len(tf.linkerVariableStrings))
+	for obj, val := range tf.linkerVariableStrings {
+		if obj == nil {
+			continue
+		}
+		if !types.Identical(obj.Type(), types.Typ[types.String]) {
+			continue
+		}
+		fullName := obj.Pkg().Path() + "." + obj.Name()
+		assignments = append(assignments, linkerAssignment{
+			obj:      obj,
+			fullName: fullName,
+			value:    val,
+		})
+	}
+
+	if len(assignments) == 0 {
+		return
+	}
+
+	slices.SortFunc(assignments, func(a, b linkerAssignment) int {
+		return strings.Compare(a.fullName, b.fullName)
+	})
+
+	stmts := make([]ast.Stmt, 0, len(assignments))
+	pos := file.Pos()
+	for _, assignment := range assignments {
+		ident := &ast.Ident{Name: assignment.obj.Name(), NamePos: pos}
+		tf.info.Uses[ident] = assignment.obj
+		expr := builder.ObfuscateStringLiteral(assignment.value, pos)
+		stmts = append(stmts, &ast.AssignStmt{
+			Lhs: []ast.Expr{ident},
+			Tok: token.ASSIGN,
+			Rhs: []ast.Expr{expr},
+		})
+	}
+
+	initDecl := &ast.FuncDecl{
+		Name: ast.NewIdent("init"),
+		Type: &ast.FuncType{
+			Params:  &ast.FieldList{},
+			Results: nil,
+		},
+		Body: &ast.BlockStmt{List: stmts},
+	}
+
+	file.Decls = append(file.Decls, initDecl)
+	tf.linkerInitInjected = true
 }
 
 func (tf *transformer) transformLink(args []string) ([]string, error) {
