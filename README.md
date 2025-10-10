@@ -41,6 +41,128 @@ Run `garble -h` to see all available commands and flags.
 
 See [docs/FEATURE_TOGGLES.md](docs/FEATURE_TOGGLES.md) for a complete flag and environment reference.
 
+### Recommended usage
+
+#### **Basic Obfuscation (Quick Start)**
+```bash
+# Simple obfuscation with random seed
+garble -seed=random build ./cmd/myapp
+```
+
+**What this does:**
+- Obfuscates all package names, function names, and type names
+- Generates a random seed (printed to stderr for reproducibility)
+- Automatically applies `-trimpath`, `-ldflags="-w -s"`, and build ID stripping
+
+---
+
+#### **Production Hardening (Recommended)**
+```bash
+# Maximum security with literal encryption and control-flow obfuscation
+garble -seed=random -literals -controlflow=auto build ./cmd/myapp
+```
+
+**What this adds:**
+- ✅ **Literal encryption**: All string/numeric literals encrypted with ASCON-128
+- ✅ **Control-flow obfuscation**: Jump tables and dead code injection (safe mode)
+- ✅ **`-ldflags=-X` protection**: Injected variables (API keys, versions) are encrypted
+
+**Use when:**
+- Protecting API keys, credentials, or sensitive strings
+- Preventing static analysis and decompilation
+- Distributing commercial/proprietary software
+
+---
+
+#### **Minimal Binary Size**
+```bash
+# Smallest possible binary (15% smaller)
+garble -seed=random -tiny build ./cmd/myapp
+```
+
+**Trade-offs:**
+- ✅ Strips all panic handlers, runtime positions, and extra metadata
+- ⚠️ Stack traces become useless (no file/line info)
+- ❌ `garble reverse` cannot recover original names
+
+**Use when:**
+- Binary size is critical (embedded systems, mobile apps)
+- Runtime debugging is not needed
+- Distribution channels have size limits
+
+---
+
+#### **Development/Debugging Mode**
+```bash
+# Keep ability to de-obfuscate stack traces
+garble -seed=myDevSeed -reversible build ./cmd/myapp
+
+# Later, de-obfuscate a crash dump:
+garble -seed=myDevSeed reverse ./cmd/myapp < crash.log
+```
+
+**What `-reversible` does:**
+- Embeds original names in a reflection map
+- Enables `garble reverse` to restore stack traces
+- ⚠️ **Weakens security** (original names are in the binary)
+
+**Use when:**
+- Testing obfuscated builds in staging
+- Need readable panic output during development
+- **Never use in production** (defeats obfuscation purpose)
+
+---
+
+#### **Reproducible CI/CD Builds**
+```bash
+# Fixed seed + nonce for identical binaries
+GARBLE_BUILD_NONCE=a1b2c3d4e5f6g7h8 garble \
+  -seed=myFixedSeed123 \
+  -literals \
+  -controlflow=auto \
+  build ./cmd/myapp
+```
+
+**Why this matters:**
+- Same source + same seed/nonce = **byte-identical binary**
+- Enables binary verification and supply chain security
+- Required for deterministic builds in CI pipelines
+
+**Use when:**
+- Auditing builds (checksums must match)
+- Distributing signed binaries
+- Compliance requirements for reproducible builds
+
+---
+
+#### **Selective Package Obfuscation**
+```bash
+# Only obfuscate internal packages, leave public API readable
+GOGARBLE='./internal/...' garble -seed=random -literals build ./cmd/myapp
+```
+
+**Use when:**
+- Building libraries with public APIs
+- Debugging customer-reported issues (public symbols help)
+- Protecting core logic while keeping interfaces clean
+
+---
+
+### What Garble Does Automatically
+
+You **do not need** to specify these flags manually:
+
+| What | How Garble Handles It |
+|------|----------------------|
+| **Path stripping** | Automatically adds `-trimpath` (extended with temp dir handling) |
+| **Debug info** | Forces `-ldflags="-w"` at link time (strips DWARF) |
+| **Symbol table** | Forces `-ldflags="-s"` at link time (strips symbols) |
+| **Build ID** | Automatically removes with `-buildid=""` |
+| **Go version** | Replaces `runtime.Version()` with "unknown" |
+| **VCS metadata** | Adds `-buildvcs=false` (no git commit info) |
+
+See [docs/FEATURE_TOGGLES.md](docs/FEATURE_TOGGLES.md#flags-applied-automatically) for implementation details.
+
 ### Purpose
 
 Produce a binary that works as well as a regular build, but that has as little
@@ -61,7 +183,7 @@ order to:
 * Replace package paths with short base64 hashes
 * Replace filenames and position information with short base64 hashes
 * Remove all [build](https://go.dev/pkg/runtime/#Version) and [module](https://go.dev/pkg/runtime/debug/#ReadBuildInfo) information
-* Strip debugging information and symbol tables via `-ldflags="-w -s"`
+* Strip debugging information and symbol tables (automatically via `-ldflags="-w -s"`)
 * [Obfuscate literals](#literal-obfuscation), if the `-literals` flag is given
 * Remove [extra information](#tiny-mode), if the `-tiny` flag is given
 * Apply [control-flow obfuscation](docs/CONTROLFLOW.md), if `-controlflow` is enabled
@@ -107,15 +229,18 @@ anti-virus scans incorrectly treating Go binaries as malware.
 
 ### Key flags and environment knobs
 
-- **`-literals`** – Scrambles string and numeric literals. Expect a modest CPU cost; perfect when protecting messages or secrets baked into the binary.
-- **`-controlflow`** (`off`, `directives`, `auto`, `all`) – Adds jump-heavy control-flow. Start with `auto` for broad protection while skipping risky functions.
-- **`-tiny`** – Strips file/line metadata for smaller binaries. Combine with `-reversible` only if you still need `garble reverse`.
-- **`-reversible`** – Keeps breadcrumbs so `garble reverse` can de-obfuscate stack traces. Leave off for maximum security.
-- **`-seed`** / **`GARBLE_BUILD_NONCE`** – Provide reproducible randomness. Pair a fixed seed with a fixed nonce when you need identical builds in CI.
-- **`GOGARBLE`** – Limit obfuscation to selected packages. Example: `GOGARBLE=./internal/...` to leave public commands untouched.
-- **`-no-cache-encrypt`** – Opt out of cache encryption. By default Garble encrypts its cache whenever a seed is available.
+- **`-literals`** – Encrypts string and numeric literals using ASCON-128 or multi-layer obfuscation. Essential when protecting API keys, credentials, or sensitive strings.
+- **`-controlflow`** (`off`, `directives`, `auto`, `all`) – Adds control-flow obfuscation with jump tables and dead code. Use `auto` for safe automatic detection.
+- **`-tiny`** – Strips file/line metadata, panic handlers, and runtime positions for 15% smaller binaries. Trade-off: stack traces become useless.
+- **`-reversible`** – Embeds original names to enable `garble reverse` for de-obfuscating stack traces. ⚠️ Weakens security—only use in development.
+- **`-seed`** – Provides entropy for name hashing and encryption. Use `-seed=random` for per-build uniqueness, or a fixed value for reproducibility.
+- **`GARBLE_BUILD_NONCE`** – Deterministic 32-byte nonce (base64). Required for reproducible builds with fixed seeds.
+- **`GOGARBLE`** – Limits obfuscation to specific packages (glob patterns). Example: `GOGARBLE='./internal/...'` to protect only internal code.
+- **`-no-cache-encrypt`** – Disables ASCON-128 cache encryption (enabled by default when seed is present).
 
-The full matrix of switches, defaults, and precedence rules lives in [docs/FEATURE_TOGGLES.md](docs/FEATURE_TOGGLES.md).
+**Important:** Garble automatically applies `-trimpath`, `-ldflags="-w -s"`, and build ID stripping—you don't need to specify these manually.
+
+The full matrix of switches, defaults, and automatic flags is documented in [docs/FEATURE_TOGGLES.md](docs/FEATURE_TOGGLES.md).
 
 ### Literal obfuscation
 

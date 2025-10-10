@@ -56,6 +56,24 @@ The repository also defines a handful of switches that assist automated testing 
 | `RUN_GARBLE_MAIN` | `bench_test.go` & `main_test.go` | Signals the integration tests to invoke the `garble` binary instead of stubbing commands. | Ignored outside the test harness. |
 | `GARBLE_TEST_REVERSING` | `testdata/script/cgo.txtar` sample program | Toggles additional logging inside the fixture binary to exercise `garble reverse`. | Read by the sample program, not by Garble itself. |
 
+## Flags Applied Automatically
+
+Garble automatically applies the following flags to build commands. You **do not need** to specify them manually:
+
+| Flag | Applied When | Purpose | Code Reference |
+|------|--------------|---------|----------------|
+| `-trimpath` | Always (all `go list/build` commands) | Strips filesystem paths from binaries. Garble extends this with `sharedTempDir` handling to prevent temporary directory leaks. | `cache_shared.go:290`, `transformer.go:76-82` |
+| `-buildvcs=false` | Always | Omits VCS metadata (git commit hash, dirty state) from binaries. | `cache_shared.go:290` |
+| `-ldflags="-w"` | Link phase only | Strips DWARF debugging information (file/line mappings, variable names). | `transformer.go:1328` |
+| `-ldflags="-s"` | Link phase only | Strips symbol table and debug sections completely. | `transformer.go:1328` |
+| `-buildid=""` | Link phase only | Removes Go build ID to prevent binary tracking across builds. | `transformer.go:1324` |
+| `-X=runtime.buildVersion=unknown` | Link phase only | Replaces `runtime.Version()` output with "unknown" instead of "go1.X.Y". | `transformer.go:1322` |
+
+**Important Notes:**
+- These flags are **hardcoded** and cannot be overridden by user input.
+- Manual specification (e.g., adding `-ldflags="-s -w"` yourself) is redundant and has no effect.
+- `-trimpath` is extended by Garble's `alterTrimpath()` function to include temporary build directories.
+
 ## Quick precedence checklist
 
 - CLI flags are parsed once at process startup; re-entrant invocations inherit state via `GARBLE_SHARED` and the cached seed/nonce.
