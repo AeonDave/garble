@@ -62,40 +62,26 @@ type obfuscator interface {
 var (
 	simpleObfuscator = simple{}
 
-	// Obfuscators contains all literal obfuscation strategies.
-	// We maintain multiple obfuscators for defense-in-depth security:
-	//
-	// Primary: ASCON-128 (60% usage) provides 128-bit authenticated encryption
-	//          with NIST Lightweight Cryptography standard compliance
-	//
-	// Legacy: (40% usage combined) provide performance benefits for small literals
-	//         and pattern diversity to resist binary fingerprinting
-	//         - simple: Fast XOR-based obfuscation
-	//         - swap: Byte position shuffling
-	//         - split: Chunk-based obfuscation
-	//         - shuffle: Random byte permutation
-	//         - seed: Seed-based generation
-	//
-	// This mix balances strong cryptography (ASCON) with fast operations (legacy)
-	// for optimal security, performance, and anti-detection capabilities.
-	Obfuscators = []obfuscator{
-		simpleObfuscator,
-		swap{},
-		split{},
-		shuffle{},
-		seed{},
-	}
-
-	// LinearTimeObfuscators contains obfuscators safe for large literals.
-	// ASCON-128 is preferred (70%) for its authenticated encryption.
-	// Simple XOR (30%) provides fallback for performance-critical cases.
-	LinearTimeObfuscators = []obfuscator{
-		simpleObfuscator,
-	}
-
 	TestObfuscator         string
 	testPkgToObfuscatorMap map[string]obfuscator
 )
+
+const (
+	strategyNameSimple  = "simple"
+	strategyNameSwap    = "swap"
+	strategyNameSplit   = "split"
+	strategyNameShuffle = "shuffle"
+	strategyNameSeed    = "seed"
+)
+
+func init() {
+	// General purpose strategies.
+	registerStrategy(strategyNameSimple, simpleObfuscator, withLinearSupport())
+	registerStrategy(strategyNameSwap, swap{})
+	registerStrategy(strategyNameSplit, split{})
+	registerStrategy(strategyNameShuffle, shuffle{})
+	registerStrategy(strategyNameSeed, seed{})
+}
 
 func genRandIntSlice(obfRand *mathrand.Rand, max, count int) []int {
 	indexes := make([]int, count)
@@ -290,7 +276,11 @@ func (r *obfRand) nextObfuscator() obfuscator {
 		return newAsconObfuscator(r.asconHelper)
 	}
 
-	return Obfuscators[r.Intn(len(Obfuscators))]
+	if obf := pickGeneralStrategy(r.Rand); obf != nil {
+		return obf
+	}
+
+	return simpleObfuscator
 }
 
 func (r *obfRand) nextLinearTimeObfuscator() obfuscator {
@@ -304,7 +294,11 @@ func (r *obfRand) nextLinearTimeObfuscator() obfuscator {
 		return newAsconObfuscator(r.asconHelper)
 	}
 
-	return LinearTimeObfuscators[r.Intn(len(LinearTimeObfuscators))]
+	if obf := pickLinearStrategy(r.Rand); obf != nil {
+		return obf
+	}
+
+	return simpleObfuscator
 }
 
 func newObfRand(rand *mathrand.Rand, file *ast.File, nameFunc NameProviderFunc) *obfRand {

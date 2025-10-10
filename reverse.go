@@ -12,6 +12,8 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	typesutil "github.com/AeonDave/garble/internal/typesutil"
 )
 
 // commandReverse implements "garble reverse".
@@ -36,7 +38,9 @@ One can reverse a captured panic stack trace as follows:
 	// We don't actually run `go list -toolexec=garble`; we only use toolexecCmd
 	// to ensure that sharedCache.ListedPackages is filled.
 	_, err := toolexecCmd("list", append(flags, pkg))
-	defer os.RemoveAll(os.Getenv("GARBLE_SHARED"))
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(os.Getenv("GARBLE_SHARED"))
 	if err != nil {
 		return err
 	}
@@ -85,7 +89,7 @@ One can reverse a captured panic stack trace as follows:
 		if err != nil {
 			return err
 		}
-		fieldToStruct := computeFieldToStruct(info)
+		fieldToStruct := typesutil.FieldToStruct(info)
 		for i, file := range files {
 			goFile := lpkg.CompiledGoFiles[i]
 			for node := range ast.Preorder(file) {
@@ -155,7 +159,9 @@ One can reverse a captured panic stack trace as follows:
 		if err != nil {
 			return err
 		}
-		defer f.Close()
+		defer func(f *os.File) {
+			_ = f.Close()
+		}(f)
 		modified, err := reverseContent(os.Stdout, f, repl)
 		if err != nil {
 			return err

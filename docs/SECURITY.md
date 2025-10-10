@@ -849,7 +849,7 @@ Legacy plaintext caches are automatically detected and read:
 func decodePkgCacheBytes(data []byte) (pkgCache, error) {
     if seed := cacheEncryptionSeed(); len(seed) > 0 {
         // Try ASCON decryption
-        return decryptCacheIntoShared(data, seed)
+    return cache.Decrypt(data, seed, &shared)
     }
     // Fallback: plaintext gob
     var cache pkgCache
@@ -878,7 +878,7 @@ func decodePkgCacheBytes(data []byte) (pkgCache, error) {
 | Key recovery | Seed never stored in cache | Attacker needs build-time seed |
 
 ### Implementation References
-- `cache_ascon.go`: `deriveCacheKey()`, `encryptCacheWithASCON()`, `decryptCacheIntoShared()`
+- `internal/cache/encryption.go`: `DeriveKey()`, `Encrypt()`, `Decrypt()`
 - `cache_pkg.go`: `computePkgCache()`, `loadPkgCache()`, `decodePkgCacheBytes()`
 - `main.go`: Seed and `-no-cache-encrypt` flag handling
 

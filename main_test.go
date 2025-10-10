@@ -26,6 +26,7 @@ import (
 	"github.com/rogpeppe/go-internal/testscript"
 
 	ah "github.com/AeonDave/garble/internal/asthelper"
+	"github.com/AeonDave/garble/internal/ldflags"
 )
 
 var proxyURL string
@@ -520,13 +521,12 @@ func TestSanitizeLinkerFlags(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sharedCache = &sharedCacheType{}
-			got, err := sanitizeLinkerFlags(tt.flags)
+			got, gotMap, err := ldflags.Sanitize(tt.flags)
 			if err != nil {
-				t.Fatalf("sanitizeLinkerFlags error: %v", err)
+				t.Fatalf("ldflags.Sanitize error: %v", err)
 			}
 			qt.Assert(t, qt.DeepEquals(got, tt.want))
-			qt.Assert(t, qt.DeepEquals(sharedCache.LinkerInjectedStrings, tt.wantMap))
+			qt.Assert(t, qt.DeepEquals(gotMap, tt.wantMap))
 		})
 	}
 }

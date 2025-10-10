@@ -20,7 +20,7 @@ import (
 	"golang.org/x/tools/go/ast/astutil"
 	"golang.org/x/tools/go/ssa"
 
-	"github.com/AeonDave/garble/internal/literals"
+	cacheenc "github.com/AeonDave/garble/internal/cache"
 )
 
 type (
@@ -71,16 +71,11 @@ func decodePkgCacheBytes(data []byte) (pkgCache, error) {
 	var loaded pkgCache
 	var decryptErr error
 
-	if seed := cacheEncryptionSeed(); len(seed) > 0 && len(data) >= asconCacheNonceSize+asconCacheTagSize {
-		key := deriveCacheKey(seed)
-		nonce := data[:asconCacheNonceSize]
-		ciphertextAndTag := data[asconCacheNonceSize:]
-		if plaintext, ok := literals.AsconDecrypt(key[:], nonce, ciphertextAndTag); ok {
-			if decErr := gob.NewDecoder(bytes.NewReader(plaintext)).Decode(&loaded); decErr == nil {
-				return loaded, nil
-			} else {
-				decryptErr = decErr
-			}
+	if seed := cacheEncryptionSeed(); len(seed) > 0 {
+		if err := cacheenc.Decrypt(data, seed, &loaded); err == nil {
+			return loaded, nil
+		} else {
+			decryptErr = err
 		}
 	}
 
@@ -299,8 +294,7 @@ func computePkgCache(fsCache *cache.Cache, lpkg *listedPackage, pkg *types.Packa
 	// Encrypt cache if flag enabled and seed present
 	// Use sharedCache.OriginalSeed (shared across toolexec processes)
 	if seed := cacheEncryptionSeed(); len(seed) > 0 {
-		// encryptCacheWithASCON handles serialization + encryption
-		encrypted, err := encryptCacheWithASCON(computed, seed)
+		encrypted, err := cacheenc.Encrypt(computed, seed)
 		if err != nil {
 			return pkgCache{}, fmt.Errorf("cache encryption failed: %v", err)
 		}

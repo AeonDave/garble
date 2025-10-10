@@ -748,15 +748,11 @@ case 4:  // Dead code, never reached
 
 **Esempio**:
 ```go
-func encryptCacheWithASCON(data interface{}, seed []byte) ([]byte, error) {
+func encryptCache(data any, seed []byte) ([]byte, error) {
     if len(seed) == 0 {
         return nil, fmt.Errorf("cache encryption: seed cannot be empty")
     }
-    // ... encryption logic
-    if err != nil {
-        return nil, fmt.Errorf("cache encryption failed: %w", err)
-    }
-    return ciphertext, nil
+    return cache.Encrypt(data, seed)
 }
 ```
 

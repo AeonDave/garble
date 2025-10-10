@@ -10,7 +10,7 @@ exec ./main
 
 -- build.stderr --
 # test/main
-garble does not support packages with a //go:linkname to runtime.lastmoduledatap
+obfuscate-and-emit step failed: garble does not support packages with a //go:linkname to runtime.lastmoduledatap
 exit status 1
 -- go.mod --
 module test/main
