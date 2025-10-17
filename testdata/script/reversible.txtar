@@ -1,18 +1,18 @@
 # Test -reversible flag controls obfuscation reversibility
 
 # Test 1: Default build (irreversible mode)
-exec garble -literals build -o secure.exe
-exec ./secure
+exec garble -literals build -o secure$exe
+exec ./secure$exe
 stdout 'Secret: testdata123'
 
-! binsubstr secure.exe 'testdata123'
+! binsubstr secure$exe 'testdata123'
 
 # Test 2: Build with -reversible flag
-exec garble -reversible -literals build -o reversible.exe
-exec ./reversible
+exec garble -reversible -literals build -o reversible$exe
+exec ./reversible$exe
 stdout 'Secret: testdata123'
 
-! binsubstr reversible.exe 'testdata123'
+! binsubstr reversible$exe 'testdata123'
 
 [short] stop
 
