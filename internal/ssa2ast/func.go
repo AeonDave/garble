@@ -142,6 +142,23 @@ func isStringType(typ types.Type) bool {
 	return types.Identical(typ, types.Typ[types.String]) || types.Identical(typ, types.Typ[types.UntypedString])
 }
 
+// isNillableType checks if a type can be assigned nil.
+// Only pointers, slices, maps, channels, interfaces, functions, and unsafe.Pointer can be nil.
+func isNillableType(typ types.Type) bool {
+	switch t := typ.(type) {
+	case *types.Pointer, *types.Slice, *types.Map, *types.Chan, *types.Signature:
+		return true
+	case *types.Interface:
+		return true
+	case *types.Basic:
+		return t.Kind() == types.UnsafePointer || t.Kind() == types.UntypedNil
+	case *types.Named:
+		// For named types (including cgo types), check the underlying type
+		return isNillableType(t.Underlying())
+	}
+	return false
+}
+
 func getFieldName(tp types.Type, index int) (string, error) {
 	if pt, ok := tp.(*types.Pointer); ok {
 		tp = pt.Elem()
@@ -164,7 +181,10 @@ func (fc *funcConverter) castCallExpr(typ types.Type, x ssa.Value) (*ast.CallExp
 	if err != nil {
 		return nil, err
 	}
-	return ah.CallExpr(&ast.ParenExpr{X: castExpr}, valExpr), nil
+	// Don't wrap castExpr in ParenExpr - it causes go/printer to insert
+	// /*line :1*/ comments inside the parens, breaking the type cast syntax.
+	// Type conversions work fine without the parentheses in AST form.
+	return ah.CallExpr(castExpr, valExpr), nil
 }
 
 func (fc *funcConverter) getLabelName(blockIdx int) *ast.Ident {
@@ -369,16 +389,15 @@ func (fc *funcConverter) ssaValue(ssaValue ssa.Value, explicitNil bool) (expr as
 	case *ssa.Const:
 		var constExpr ast.Expr
 		if val.Value == nil {
-			// handle nil constant for non-pointer structs
-			typ := val.Type()
-			if _, ok := typ.(*types.Named); ok {
-				typ = typ.Underlying()
-			}
-			if _, ok := typ.(*types.Struct); ok {
+			// For nil constants, check if the target type is nillable.
+			// If not nillable (e.g., cgo types, arrays, structs, basic types),
+			// emit a zero value instead of attempting to cast nil to the type.
+			if !isNillableType(val.Type()) {
 				typExpr, err := fc.tc.Convert(val.Type())
 				if err != nil {
 					return nil, err
 				}
+				// Generate zero value composite literal for non-nillable types
 				return &ast.CompositeLit{Type: typExpr}, nil
 			}
 
@@ -396,11 +415,24 @@ func (fc *funcConverter) ssaValue(ssaValue ssa.Value, explicitNil bool) (expr as
 			}
 		}
 
+		// Check if the type is an interface. Interface types cannot be used in type conversions.
+		// For example, `error(nil)` is invalid syntax - interfaces must use direct nil assignment.
+		if _, isInterface := val.Type().Underlying().(*types.Interface); isInterface {
+			// For nil values of interface type, return nil directly without casting
+			if val.Value == nil {
+				return constExpr, nil
+			}
+			// For non-nil values, we cannot convert to an interface type using a cast.
+			// This should not happen in valid SSA, but if it does, return the value as-is.
+			return constExpr, nil
+		}
+
 		castExpr, err := fc.tc.Convert(val.Type())
 		if err != nil {
 			return nil, err
 		}
-		return ah.CallExpr(&ast.ParenExpr{X: castExpr}, constExpr), nil
+		// Don't wrap in ParenExpr - causes go/printer to insert /*line :1*/ comments
+		return ah.CallExpr(castExpr, constExpr), nil
 	case *ssa.Parameter, *ssa.FreeVar:
 		return ast.NewIdent(val.Name()), nil
 	default:
@@ -901,7 +933,8 @@ func (fc *funcConverter) convertBlock(astFunc *AstFunc, ssaBlock *ssa.BasicBlock
 			if err != nil {
 				return err
 			}
-			stmt = defineVar(instr, ah.CallExpr(&ast.ParenExpr{X: castExpr}, xExpr))
+			// Don't wrap in ParenExpr - causes go/printer to insert /*line :1*/ comments
+			stmt = defineVar(instr, ah.CallExpr(castExpr, xExpr))
 		case *ssa.Store:
 			addrExpr, err := fc.convertSsaValue(instr.Addr)
 			if err != nil {

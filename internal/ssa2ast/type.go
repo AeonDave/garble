@@ -107,6 +107,12 @@ func (tc *TypeConverter) Convert(typ types.Type) (ast.Expr, error) {
 			}
 		}
 
+		// Handle predeclared identifiers (built-ins like error, comparable, any, etc.)
+		// These should always be emitted as simple identifiers without package qualification
+		if obj.Pkg() == nil {
+			return ast.NewIdent(obj.Name()), nil
+		}
+
 		var namedExpr ast.Expr
 		if pkgIdent := tc.resolver(obj.Pkg()); pkgIdent != nil {
 			// reference to unexported named emulated through new interface with explicit declarated methods

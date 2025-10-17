@@ -43,6 +43,8 @@ func newDispatcherHardening(names []string) dispatcherHardening {
 }
 
 func getRandomName(rnd *mathrand.Rand) string {
+	// Generate a random name with a prefix to ensure it's not a predeclared identifier
+	// The prefix "_garble" ensures it won't conflict with Go's predeclared identifiers
 	return "_garble" + strconv.FormatUint(rnd.Uint64(), 32)
 }
 

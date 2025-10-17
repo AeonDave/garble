@@ -49,6 +49,22 @@ const (
 	limitFunctionCount = 256
 )
 
+func isNillable(typ types.Type) bool {
+	switch t := typ.(type) {
+	case *types.Pointer, *types.Slice, *types.Map, *types.Chan, *types.Signature:
+		return true
+	case *types.Interface:
+		return true
+	case *types.Basic:
+		return t.Kind() == types.UnsafePointer || t.Kind() == types.UntypedNil
+	case *types.Named:
+		// For named types, defer to the underlying type only.
+		// Do not special-case cgo types; many of them are non-nillable.
+		return isNillable(t.Underlying())
+	}
+	return false
+}
+
 // stringEncoders array of functions converting an array of bytes into a string
 // used to generate more readable trash strings
 var stringEncoders = []func([]byte) string{
@@ -113,6 +129,8 @@ var valueGenerators = map[types.Type]func(rand *mathrand.Rand, targetType types.
 				maxValue = math.MaxInt8
 			case types.Int16, types.Uint16:
 				maxValue = math.MaxInt16
+			default:
+				panic("unhandled default case")
 			}
 		}
 		return &ast.BasicLit{
@@ -188,6 +206,7 @@ func isSupportedSig(m *types.Func) bool {
 
 type trashGenerator struct {
 	importNameResolver ssa2ast.ImportNameResolver
+	currentPkgPath     string
 	rand               *mathrand.Rand
 	typeConverter      *ssa2ast.TypeConverter
 	globals            []*types.Var
@@ -195,9 +214,10 @@ type trashGenerator struct {
 	methodCache        map[types.Type][]*types.Func
 }
 
-func newTrashGenerator(ssaProg *ssa.Program, importNameResolver ssa2ast.ImportNameResolver, rand *mathrand.Rand) *trashGenerator {
+func newTrashGenerator(ssaProg *ssa.Program, currentPkgPath string, importNameResolver ssa2ast.ImportNameResolver, rand *mathrand.Rand) *trashGenerator {
 	t := &trashGenerator{
 		importNameResolver: importNameResolver,
+		currentPkgPath:     currentPkgPath,
 		rand:               rand,
 		typeConverter:      ssa2ast.NewTypeConverted(importNameResolver),
 		methodCache:        make(map[types.Type][]*types.Func),
@@ -225,10 +245,40 @@ func (d *definedVar) HasRefs() bool {
 	return d.External || d.Refs > 0
 }
 
+func isPredeclaredName(name string) bool {
+	if name == "_" {
+		return false
+	}
+	// Check if the name is a predeclared identifier in Go's universe scope
+	// This includes types like "int", "string", "error", etc.
+	return types.Universe.Lookup(name) != nil
+}
+
+// isValidIdentifier checks if a name is a valid Go identifier and not a predeclared name
+func isValidIdentifier(name string) bool {
+	if name == "" {
+		return false
+	}
+	// First character must be a letter or underscore
+	first := name[0]
+	if !((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || first == '_') {
+		return false
+	}
+	// Remaining characters must be letters, digits, or underscores
+	for i := 1; i < len(name); i++ {
+		c := name[i]
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+			return false
+		}
+	}
+	// Must not be a predeclared identifier
+	return !isPredeclaredName(name)
+}
+
 // initialize scans and writes all supported functions in all non-internal packages used in the program
 func (t *trashGenerator) initialize(ssaProg *ssa.Program) {
 	for _, p := range ssaProg.AllPackages() {
-		if isInternal(p.Pkg.Path()) || p.Pkg.Name() == "main" {
+		if isInternal(p.Pkg.Path()) || p.Pkg.Name() == "main" || p.Pkg.Path() == t.currentPkgPath {
 			continue
 		}
 		var pkgFuncs []*types.Func
@@ -261,6 +311,9 @@ func (t *trashGenerator) initialize(ssaProg *ssa.Program) {
 
 // convertExpr if it is not possible to directly assign one type to another, generates (<to>)(value) cast expression
 func (t *trashGenerator) convertExpr(from, to types.Type, expr ast.Expr) ast.Expr {
+	if !isNillable(to) && isNilIdent(expr) {
+		return t.generateRandomConst(to, t.rand)
+	}
 	if types.AssignableTo(from, to) {
 		return expr
 	}
@@ -269,7 +322,13 @@ func (t *trashGenerator) convertExpr(from, to types.Type, expr ast.Expr) ast.Exp
 	if err != nil {
 		panic(err)
 	}
-	return ah.CallExpr(&ast.ParenExpr{X: castExpr}, expr)
+	// Don't wrap in ParenExpr - causes go/printer to insert /*line :1*/ comments
+	return ah.CallExpr(castExpr, expr)
+}
+
+func isNilIdent(expr ast.Expr) bool {
+	ident, ok := expr.(*ast.Ident)
+	return ok && ident.Name == "nil"
 }
 
 // chooseRandomVar returns a random local variable compatible with the passed type
@@ -305,9 +364,19 @@ func (t *trashGenerator) chooseRandomGlobal(typ types.Type) ast.Expr {
 
 	targetGlobal := candidates[t.rand.Intn(len(candidates))]
 
+	// Safety check: skip if package is nil (shouldn't happen for exported globals)
+	pkg := targetGlobal.Pkg()
+	if pkg == nil {
+		return nil
+	}
+
 	var globalExpr ast.Expr
-	if pkgIdent := t.importNameResolver(targetGlobal.Pkg()); pkgIdent != nil {
-		globalExpr = ah.SelectExpr(pkgIdent, ast.NewIdent(targetGlobal.Name()))
+	if pkg.Path() != t.currentPkgPath {
+		if pkgIdent := t.importNameResolver(pkg); pkgIdent != nil {
+			globalExpr = ah.SelectExpr(pkgIdent, ast.NewIdent(targetGlobal.Name()))
+		} else {
+			return nil
+		}
 	} else {
 		globalExpr = ast.NewIdent(targetGlobal.Name())
 	}
@@ -318,6 +387,9 @@ func (t *trashGenerator) chooseRandomGlobal(typ types.Type) ast.Expr {
 func (t *trashGenerator) generateRandomConst(p types.Type, rand *mathrand.Rand) ast.Expr {
 	var candidates []types.Type
 	for typ := range valueGenerators {
+		if typ == types.Typ[types.UntypedNil] && !isNillable(p) {
+			continue
+		}
 		if canConvert(typ, p) {
 			candidates = append(candidates, typ)
 		}
@@ -336,11 +408,17 @@ func (t *trashGenerator) generateRandomConst(p types.Type, rand *mathrand.Rand) 
 func (t *trashGenerator) generateRandomValue(typ types.Type, vars map[string]*definedVar) ast.Expr {
 	if t.rand.Float32() < varProb {
 		if expr := t.chooseRandomVar(typ, vars); expr != nil {
+			if !isNillable(typ) && isNilIdent(expr) {
+				return t.generateRandomConst(typ, t.rand)
+			}
 			return expr
 		}
 	}
 	if t.rand.Float32() < globalProb {
 		if expr := t.chooseRandomGlobal(typ); expr != nil {
+			if !isNillable(typ) && isNilIdent(expr) {
+				return t.generateRandomConst(typ, t.rand)
+			}
 			return expr
 		}
 	}
@@ -407,40 +485,66 @@ func (t *trashGenerator) chooseRandomMethod(vars map[string]*definedVar) (string
 	return name, methods[t.rand.Intn(len(methods))]
 }
 
-// generateCall generates a random function or method call with random parameters and storing the call results in local variables
-// Example:
-//
-// _garblebfqv3dv0i98n4 := syscall.Getppid()
-// _garble5q5ot93l1arna, _garble7al9sqg518rmm := os.Create("I3BLXYDYB2TMSHB7F55K5IMHJBNAFOKKJRKZHRBR")
-// _, _ = _garble5q5ot93l1arna.Readdir(_garblebfqv3dv0i98n4)
-// _ = ___garble_import5.Appendf(([]byte)("y4FPLnz8"), _garble7al9sqg518rmm)
+// generateCall generates a random function or method call with random parameters and storing the call results in local variables.
+// Safety measures:
+// - Skips functions where package qualification fails (avoids unqualified external calls)
+// - Falls back to generateAssign if no suitable function/method can be found
+// - Properly qualifies all external function calls
 func (t *trashGenerator) generateCall(vars map[string]*definedVar) ast.Stmt {
+	// If no external functions available, fall back to assignment
+	if len(t.pkgFunctions) == 0 {
+		return t.generateAssign(vars)
+	}
+
 	var (
 		targetRecvName string
 		targetFunc     *types.Func
 	)
+
+	// Try to choose a method call (50% probability)
 	if t.rand.Float32() < methodCallProb {
 		targetRecvName, targetFunc = t.chooseRandomMethod(vars)
 	}
 
+	// If no method chosen, try to choose a function
 	if targetFunc == nil {
-		targetPkg := t.pkgFunctions[t.rand.Intn(len(t.pkgFunctions))]
-		targetFunc = targetPkg[t.rand.Intn(len(targetPkg))]
+		// Try up to 10 times to find a suitable function
+		for attempts := 0; attempts < 10; attempts++ {
+			targetPkg := t.pkgFunctions[t.rand.Intn(len(t.pkgFunctions))]
+			candidate := targetPkg[t.rand.Intn(len(targetPkg))]
+
+			// Safety check: ensure we can resolve the package import
+			// This prevents unqualified function calls
+			if candidate.Pkg() == nil {
+				continue
+			}
+			if t.importNameResolver(candidate.Pkg()) == nil {
+				continue
+			}
+
+			targetFunc = candidate
+			break
+		}
 	}
 
-	var args []ast.Expr
+	// If we still don't have a suitable function, fall back to assignment
+	if targetFunc == nil {
+		return t.generateAssign(vars)
+	}
 
-	targetSig := targetFunc.Signature()
+	// Generate arguments for the function call
+	var args []ast.Expr
+	targetSig := targetFunc.Type().(*types.Signature)
 	params := targetSig.Params()
-	for i := range params.Len() {
+	for i := 0; i < params.Len(); i++ {
 		param := params.At(i)
 		if !targetSig.Variadic() || i != params.Len()-1 {
 			args = append(args, t.generateRandomValue(param.Type(), vars))
 			continue
 		}
-
+		// Handle variadic parameters
 		variadicCount := t.rand.Intn(maxVariadicParams)
-		for range variadicCount {
+		for j := 0; j < variadicCount; j++ {
 			sliceTyp, ok := param.Type().(*types.Slice)
 			if !ok {
 				panic(fmt.Errorf("unsupported variadic type: %v", param.Type()))
@@ -449,31 +553,56 @@ func (t *trashGenerator) generateCall(vars map[string]*definedVar) ast.Stmt {
 		}
 	}
 
+	// Build the function call expression
 	var fun ast.Expr
 	if targetSig.Recv() != nil {
+		// Method call
 		if len(targetRecvName) == 0 {
 			panic("recv var must be set")
 		}
 		fun = ah.SelectExpr(ast.NewIdent(targetRecvName), ast.NewIdent(targetFunc.Name()))
-	} else if pkgIdent := t.importNameResolver(targetFunc.Pkg()); pkgIdent != nil {
-		fun = ah.SelectExpr(pkgIdent, ast.NewIdent(targetFunc.Name()))
 	} else {
-		fun = ast.NewIdent(targetFunc.Name())
+		// Function call - must be properly qualified
+		pkgIdent := t.importNameResolver(targetFunc.Pkg())
+		if pkgIdent == nil {
+			// Safety: if we can't resolve the package, fall back to assignment
+			// This should not happen due to the check above, but as a safeguard
+			return t.generateAssign(vars)
+		}
+		fun = ah.SelectExpr(pkgIdent, ast.NewIdent(targetFunc.Name()))
 	}
 
 	callExpr := ah.CallExpr(fun, args...)
 	results := targetSig.Results()
-	if results == nil {
-		return ah.ExprStmt(callExpr)
+
+	// If the function returns nothing, just call it
+	if results == nil || results.Len() == 0 {
+		return &ast.ExprStmt{X: callExpr}
 	}
 
+	// Create assignment statement for function results
 	assignStmt := &ast.AssignStmt{
 		Tok: token.ASSIGN,
 		Rhs: []ast.Expr{callExpr},
 	}
-
-	for i := range results.Len() {
-		ident := ast.NewIdent(getRandomName(t.rand))
+	for i := 0; i < results.Len(); i++ {
+		// Generate a valid identifier that doesn't conflict with predeclared names
+		var ident *ast.Ident
+		attempts := 0
+		for {
+			name := getRandomName(t.rand)
+			// Ensure the generated name is valid and not a predeclared identifier
+			if isValidIdentifier(name) {
+				ident = ast.NewIdent(name)
+				break
+			}
+			attempts++
+			// Prevent infinite loop - if we can't generate a valid name after many attempts, use a fallback
+			if attempts > 100 {
+				ident = ast.NewIdent(fmt.Sprintf("_garble_fallback_%d", i))
+				break
+			}
+		}
 		vars[ident.Name] = &definedVar{
 			Type:   results.At(i).Type(),
 			Ident:  ident,
@@ -497,6 +626,12 @@ func (t *trashGenerator) generateAssign(vars map[string]*definedVar) ast.Stmt {
 			varNames = append(varNames, name)
 		}
 	}
+
+	// Safety check: if no suitable variables, return empty statement
+	if len(varNames) == 0 {
+		return &ast.EmptyStmt{}
+	}
+
 	t.rand.Shuffle(len(varNames), func(i, j int) {
 		varNames[i], varNames[j] = varNames[j], varNames[i]
 	})
@@ -544,11 +679,44 @@ func (t *trashGenerator) Generate(statementCount int, externalVars map[string]ty
 		stmts = append(stmts, stmt)
 	}
 
+	// First, rename idents with no refs to blank identifiers
 	for _, v := range vars {
 		if v.Ident != nil && !v.HasRefs() {
 			v.Ident.Name = "_"
-		} else if v.Assign != nil {
+		}
+	}
+	// Then, decide per-assignment whether to use short var declaration.
+	// Use ":=" only if there is at least one non-blank identifier on the LHS,
+	// otherwise keep simple assignment to avoid "no new variables" errors.
+	seenAssign := make(map[*ast.AssignStmt]struct{})
+	for _, v := range vars {
+		if v.Assign == nil {
+			continue
+		}
+		if _, done := seenAssign[v.Assign]; done {
+			continue
+		}
+		seenAssign[v.Assign] = struct{}{}
+		hasNonBlank := false
+		var predeclared []string
+		for _, lhs := range v.Assign.Lhs {
+			if id, ok := lhs.(*ast.Ident); ok {
+				if id.Name != "_" {
+					hasNonBlank = true
+				}
+				if isPredeclaredName(id.Name) {
+					predeclared = append(predeclared, id.Name)
+				}
+			}
+		}
+		// Never use short declaration (:=) if any identifier is predeclared
+		// This prevents shadowing built-in types like "error", "string", etc.
+		if len(predeclared) > 0 {
+			v.Assign.Tok = token.ASSIGN
+		} else if hasNonBlank {
 			v.Assign.Tok = token.DEFINE
+		} else {
+			v.Assign.Tok = token.ASSIGN
 		}
 	}
 	return stmts

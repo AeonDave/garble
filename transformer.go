@@ -508,6 +508,19 @@ func (tf *transformer) typecheckParsedFiles(files []*ast.File) error {
 }
 
 func (tf *transformer) applyControlFlowTransforms(files *[]*ast.File, paths *[]string) (*ssa.Package, []string, error) {
+	if !tf.curPkg.ToObfuscate {
+		return nil, nil, nil
+	}
+
+	if sharedCache != nil && sharedCache.GoEnv.GOMOD != "" && tf.curPkg.Dir != "" {
+		modRoot := filepath.Dir(sharedCache.GoEnv.GOMOD)
+		if rel, err := filepath.Rel(modRoot, tf.curPkg.Dir); err == nil {
+			if strings.HasPrefix(rel, "..") || rel == ".." {
+				return nil, nil, nil
+			}
+		}
+	}
+
 	mode := flagControlFlowMode
 	if tf.curPkg.Standard && mode != ctrlflow.ModeAnnotated {
 		// The standard library contains compiler intrinsics and patterns
@@ -519,7 +532,7 @@ func (tf *transformer) applyControlFlowTransforms(files *[]*ast.File, paths *[]s
 	}
 	ssaPkg := ssaBuildPkg(tf.pkg, *files, tf.info)
 
-	newFileName, newFile, affectedFiles, err := ctrlflow.Obfuscate(fset, ssaPkg, *files, tf.obfRand, mode)
+	newFileName, newFile, affectedFiles, err := ctrlflow.Obfuscate(fset, ssaPkg, *files, tf.obfRand, mode, sharedTempDir)
 	if err != nil {
 		return nil, nil, err
 	}

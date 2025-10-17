@@ -127,6 +127,8 @@ var (
 	sharedTempDir = os.Getenv("GARBLE_SHARED")
 )
 
+var requestedOutputPath string
+
 func init() {
 	flagSet.Usage = usage
 	flagSet.BoolVar(&flagLiterals, "literals", false, "Obfuscate literals such as strings")
@@ -311,7 +313,10 @@ func mainErr(args []string) error {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		log.Printf("calling via toolexec: %s", cmd)
-		return cmd.Run()
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+		return finalizeRequestedOutput(sharedCache.GoEnv.GOOS)
 
 	case "toolexec":
 		_, tool := filepath.Split(args[0])
@@ -400,6 +405,7 @@ func toolexecCmd(command string, args []string) (*exec.Cmd, error) {
 	// Split the flags from the package arguments, since we'll need
 	// to run 'go list' on the same set of packages.
 	flags, args := splitFlagsFromArgs(args)
+	recordRequestedOutput(flags)
 	if hasHelpFlag(flags) {
 		out, _ := exec.Command("go", command, "-h").CombinedOutput()
 		_, _ = fmt.Fprintf(os.Stderr, `
@@ -705,6 +711,84 @@ garble was built with %q and can't be used with the newer %q; rebuild it with a 
 	}
 
 	return true
+}
+
+func recordRequestedOutput(flags []string) {
+	requestedOutputPath = ""
+	for i := 0; i < len(flags); i++ {
+		f := flags[i]
+		if f == "-o" {
+			i++
+			if i < len(flags) {
+				requestedOutputPath = flags[i]
+			}
+			continue
+		}
+		if strings.HasPrefix(f, "-o=") {
+			requestedOutputPath = f[len("-o="):]
+		}
+	}
+}
+
+func finalizeRequestedOutput(targetGOOS string) error {
+	path := requestedOutputPath
+	requestedOutputPath = ""
+	if path == "" {
+		return nil
+	}
+
+	if targetGOOS == "" {
+		targetGOOS = runtime.GOOS
+	}
+
+	if targetGOOS == "windows" {
+		return nil
+	}
+
+	if !strings.EqualFold(filepath.Ext(path), ".exe") {
+		return nil
+	}
+
+	alias := strings.TrimSuffix(path, filepath.Ext(path))
+	if alias == "" || alias == path {
+		return nil
+	}
+
+	if _, err := os.Stat(alias); err == nil {
+		return nil
+	}
+
+	if err := os.Link(path, alias); err == nil {
+		return nil
+	}
+	return copyFile(path, alias)
+}
+
+func copyFile(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("cannot copy directory %q to %q", src, dst)
+	}
+
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+	if err != nil {
+		return err
+	}
+	defer func() { _ = out.Close() }()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Sync()
 }
 
 func usage() {

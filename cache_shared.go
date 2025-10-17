@@ -73,6 +73,7 @@ type sharedCacheType struct {
 	GoEnv struct {
 		GOOS   string // the GOOS build target
 		GOARCH string // the GOARCH build target
+		GOMOD  string // go.mod file for the main module
 
 		GOVERSION string
 		GOROOT    string
