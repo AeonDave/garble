@@ -238,7 +238,7 @@ anti-virus scans incorrectly treating Go binaries as malware.
 - **`GOGARBLE`** – Limits obfuscation to specific packages (glob patterns). Example: `GOGARBLE='./internal/...'` to protect only internal code.
 - **`-no-cache-encrypt`** – Disables ASCON-128 cache encryption. By default Garble encrypts cache entries and, when no seed is supplied, derives a per-build key from the build nonce.
 
-**Important:** Garble automatically applies `-trimpath`, `-ldflags="-w -s"`, and build ID stripping—you don't need to specify these manually.
+**Important:** Garble automatically applies `-trimpath`, `-ldflags="-w -s"`, and build ID stripping, so you don't need to specify these manually.
 
 The full matrix of switches, defaults, and automatic flags is documented in [docs/FEATURE_TOGGLES.md](docs/FEATURE_TOGGLES.md).
 
@@ -256,6 +256,8 @@ Garble uses multiple obfuscation strategies for defense-in-depth:
 Notes and limits
 - String constants that must remain compile-time values (array lengths, `iota` math, `case` labels, etc.) are preserved to keep the program valid and may stay in plaintext.
 - Strings injected via `-ldflags=-X` are **fully protected**: the flag is sanitized at parse time, and the value is rehydrated as an obfuscated init-time assignment (ASCON-128 or multi-layer simple obfuscation).
+
+Dive into the full design (HKDF key derivation, obfuscator selection, and external key mixing) in [docs/LITERAL_ENCRYPTION.md](docs/LITERAL_ENCRYPTION.md).
 
 **Example - Protecting API Keys**:
 ```sh
@@ -310,7 +312,7 @@ Recent releases focus on raising the bar for reverse engineers while keeping the
 - Optional reversibility – keep `-reversible` off in production, enable it in staging to recover stack traces with `garble reverse`.
 - Hardened cache – when a seed is present (and `-no-cache-encrypt` is not set), Garble encrypts its on-disk cache automatically.
 
-Want the deep dive? The design notes and threat model live in [docs/SECURITY.md](docs/SECURITY.md).
+Want the deep dive? See [docs/LITERAL_ENCRYPTION.md](docs/LITERAL_ENCRYPTION.md) for literal internals and [docs/SECURITY.md](docs/SECURITY.md) for the broader threat model.
 
 ### Speed
 

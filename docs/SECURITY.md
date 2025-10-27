@@ -39,7 +39,7 @@ This document provides the comprehensive technical security architecture of Garb
 
 - **Per-Build Uniqueness**: Every build uses a cryptographically random nonce mixed with the seed, ensuring symbol names and keys differ even with identical source code (unless explicitly reproduced).
 - **Metadata Hardening**: Runtime function tables are encrypted with format-preserving Feistel encryption; decryption happens transparently at runtime via injected helpers.
-- **Literal Protection**: Strings and constants are encrypted inline using NIST-standard ASCON-128 or multi-layer reversible transforms.
+- **Literal Protection**: Strings and constants are encrypted inline using NIST-standard ASCON-128 or multi-layer reversible transforms (see `docs/LITERAL_ENCRYPTION.md`).
 - **Reflection Suppression**: Original identifier names are omitted from binaries by default, eliminating the reverse-engineering oracle.
 - **Cache Security**: Build artifacts are encrypted at rest; tampering is detected via authentication tags.
 
@@ -1217,6 +1217,7 @@ fmt.Errorf("database %s not found", dbName)
 |------------------------|-----------------------------------------|---------------------------|
 | **FEATURE_TOGGLES.md** | Complete flag and environment reference | `docs/FEATURE_TOGGLES.md` |
 | **CONTROLFLOW.md**     | Control-flow obfuscation design         | `docs/CONTROLFLOW.md`     |
+| **LITERAL_ENCRYPTION.md** | Literal encryption architecture and HKDF design | `docs/LITERAL_ENCRYPTION.md` |
 | **README.md**          | User-facing overview and quick start    | `README.md`               |
 | **This document**      | Security architecture and threat model  | `docs/SECURITY.md`        |
 
