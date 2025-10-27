@@ -106,19 +106,20 @@ var booleanFlags = map[string]bool{
 }
 
 var flagSet = flag.NewFlagSet("garble", flag.ExitOnError)
-var rxGarbleFlag = regexp.MustCompile(`-(?:literals|tiny|debug|debugdir|seed|reversible|controlflow)(?:$|=)`)
+var rxGarbleFlag = regexp.MustCompile(`-(?:literals|tiny|debug|debugdir|seed|reversible|controlflow|cache-encrypt-nonce)(?:$|=)`)
 
 var (
-	flagLiterals         bool
-	flagTiny             bool
-	flagDebug            bool
-	flagDebugDir         string
-	flagSeed             seedFlag
-	flagReversible       bool
-	flagCacheEncrypt     = true // Default ON for security
-	buildNonceRandom     bool
-	flagControlFlowMode  = ctrlflow.ModeOff
-	controlFlowFlagValue = controlFlowFlag{mode: ctrlflow.ModeOff}
+	flagLiterals                  bool
+	flagTiny                      bool
+	flagDebug                     bool
+	flagDebugDir                  string
+	flagSeed                      seedFlag
+	flagReversible                bool
+	flagCacheEncrypt              = true // Default ON for security
+	flagCacheEncryptNonceFallback bool
+	buildNonceRandom              bool
+	flagControlFlowMode           = ctrlflow.ModeOff
+	controlFlowFlagValue          = controlFlowFlag{mode: ctrlflow.ModeOff}
 
 	// Presumably OK to share fset across packages.
 	fset = token.NewFileSet()
@@ -140,6 +141,7 @@ func init() {
 
 	var noCacheEncrypt bool
 	flagSet.BoolVar(&noCacheEncrypt, "no-cache-encrypt", false, "Disable cache encryption (not recommended for production)")
+	flagSet.BoolVar(&flagCacheEncryptNonceFallback, "cache-encrypt-nonce", false, "Encrypt cache using the build nonce when no seed is provided (per-build cache entries)")
 }
 
 //goland:noinspection GoUnhandledErrorResult
