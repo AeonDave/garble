@@ -5,6 +5,8 @@ package main
 
 import (
 	"bytes"
+	"io"
+	"sync"
 	"testing"
 
 	cacheenc "github.com/AeonDave/garble/internal/cache"
@@ -218,18 +220,22 @@ func TestCacheEncryptionSeedSelection(t *testing.T) {
 	originalFlag := flagCacheEncrypt
 	originalSeed := flagSeed
 	originalShared := sharedCache
+	originalFallback := flagCacheEncryptNonceFallback
+	originalWarnWriter := cacheEncryptWarnWriter
 	t.Cleanup(func() {
 		flagCacheEncrypt = originalFlag
 		flagSeed = originalSeed
 		sharedCache = originalShared
+		flagCacheEncryptNonceFallback = originalFallback
+		cacheEncryptWarnWriter = originalWarnWriter
 	})
 
 	// Case 1: Encryption disabled entirely
 	flagCacheEncrypt = false
 	sharedCache = &sharedCacheType{OriginalSeed: []byte("should-not-be-used")}
 	flagSeed = seedFlag{bytes: []byte("should-not-be-used")}
-	if got := cacheEncryptionSeed(); got != nil {
-		t.Fatalf("expected nil seed when encryption disabled, got %x", got)
+	if got, fallback := cacheEncryptionSeed(); got != nil || fallback {
+		t.Fatalf("expected nil seed when encryption disabled, got %x (fallback=%v)", got, fallback)
 	}
 
 	// Case 2: Shared cache provides canonical seed
@@ -237,21 +243,42 @@ func TestCacheEncryptionSeedSelection(t *testing.T) {
 	sharedSeed := []byte("shared-seed")
 	sharedCache = &sharedCacheType{OriginalSeed: sharedSeed}
 	flagSeed = seedFlag{bytes: []byte("fallback-seed")}
-	if got := cacheEncryptionSeed(); !bytes.Equal(got, sharedSeed) {
-		t.Fatalf("expected shared seed %q, got %x", sharedSeed, got)
+	if got, fallback := cacheEncryptionSeed(); !bytes.Equal(got, sharedSeed) || fallback {
+		t.Fatalf("expected shared seed %q, got %x (fallback=%v)", sharedSeed, got, fallback)
 	}
 
 	// Case 3: Fall back to CLI seed when shared cache missing
 	sharedCache = nil
 	cliSeedRaw := []byte("cli-seed")
 	flagSeed = seedFlag{bytes: cliSeedRaw}
-	if got := cacheEncryptionSeed(); !bytes.Equal(got, cliSeedRaw) {
-		t.Fatalf("expected CLI seed %q, got %x", cliSeedRaw, got)
+	if got, fallback := cacheEncryptionSeed(); !bytes.Equal(got, cliSeedRaw) || fallback {
+		t.Fatalf("expected CLI seed %q, got %x (fallback=%v)", cliSeedRaw, got, fallback)
 	}
 
-	// Case 4: No seeds available -> nil result
+	cacheEncryptWarnWriter = io.Discard
+	cacheEncryptWarnOnce = sync.Once{}
+	cacheEncryptFallbackOnce = sync.Once{}
+
+	// Case 4: Build nonce fallback when enabled
+	fallbackNonce := []byte("nonce-for-fallback")
+	sharedCache = &sharedCacheType{BuildNonce: fallbackNonce}
+	flagCacheEncryptNonceFallback = true
 	flagSeed = seedFlag{}
-	if got := cacheEncryptionSeed(); got != nil {
-		t.Fatalf("expected nil when no seeds available, got %x", got)
+	got, fallback := cacheEncryptionSeed()
+	if !fallback {
+		t.Fatalf("expected fallback flag when using build nonce")
+	}
+	expected := combineSeedAndNonce(nil, fallbackNonce)
+	if !bytes.Equal(got, expected) {
+		t.Fatalf("expected fallback seed %x, got %x", expected, got)
+	}
+
+	// Case 5: No fallback configured -> nil result
+	flagCacheEncryptNonceFallback = false
+	cacheEncryptWarnOnce = sync.Once{}
+	cacheEncryptFallbackOnce = sync.Once{}
+	got, fallback = cacheEncryptionSeed()
+	if got != nil || fallback {
+		t.Fatalf("expected nil when no seeds available, got %x (fallback=%v)", got, fallback)
 	}
 }

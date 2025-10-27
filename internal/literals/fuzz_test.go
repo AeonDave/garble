@@ -72,9 +72,11 @@ func FuzzObfuscate(f *testing.F) {
 
 		// Obfuscate the literals and print the source back.
 		rand := mathrand.New(mathrand.NewSource(randSeed))
+		keyProvider := literals.NewHKDFKeyProvider([]byte("fuzz-master-secret-0123456789ab"), []byte("fuzz-package-salt-0123456789"), "fuzz_test.go")
+		cfg := literals.BuilderConfig{KeyProvider: keyProvider}
 		srcSyntax = literals.Obfuscate(rand, srcSyntax, &info, nil, func(rand *mathrand.Rand, baseName string) string {
 			return fmt.Sprintf("%s%d", baseName, rand.Uint64())
-		})
+		}, cfg)
 		count := tdirCounter.Add(1)
 		f, err := os.Create(filepath.Join(tdir, fmt.Sprintf("src_%d.go", count)))
 		qt.Assert(t, qt.IsNil(err))
