@@ -236,8 +236,7 @@ anti-virus scans incorrectly treating Go binaries as malware.
 - **`-seed`** – Provides entropy for name hashing and encryption. Use `-seed=random` for per-build uniqueness, or a fixed value for reproducibility.
 - **`GARBLE_BUILD_NONCE`** – Deterministic 32-byte nonce (base64). Required for reproducible builds with fixed seeds.
 - **`GOGARBLE`** – Limits obfuscation to specific packages (glob patterns). Example: `GOGARBLE='./internal/...'` to protect only internal code.
-- **`-no-cache-encrypt`** – Disables ASCON-128 cache encryption (enabled by default when seed or nonce fallback is present).
-- **`-cache-encrypt-nonce`** – Use the per-build nonce to encrypt the cache when no seed is provided. Cache entries become build-specific.
+- **`-no-cache-encrypt`** – Disables ASCON-128 cache encryption. By default Garble encrypts cache entries and, when no seed is supplied, derives a per-build key from the build nonce.
 
 **Important:** Garble automatically applies `-trimpath`, `-ldflags="-w -s"`, and build ID stripping—you don't need to specify these manually.
 

@@ -34,9 +34,8 @@ var (
 )
 
 var (
-	cacheEncryptWarnOnce     sync.Once
-	cacheEncryptFallbackOnce sync.Once
-	cacheEncryptWarnWriter   io.Writer = os.Stderr
+	cacheEncryptWarnOnce   sync.Once
+	cacheEncryptWarnWriter io.Writer = os.Stderr
 )
 
 // pkgCache contains information about a package that will be stored in fsCache.
@@ -70,23 +69,15 @@ func cacheEncryptionSeed() ([]byte, bool) {
 	if flagSeed.present() {
 		return flagSeed.bytes, false
 	}
-	if flagCacheEncryptNonceFallback {
-		if sharedCache != nil && len(sharedCache.BuildNonce) > 0 {
-			seed := combineSeedAndNonce(nil, sharedCache.BuildNonce)
-			cacheEncryptFallbackOnce.Do(func() {
-				fmt.Fprintln(cacheEncryptWarnWriter, "garble: cache encryption using per-build nonce; supply -seed for reusable encrypted cache entries")
-			})
-			return seed, true
+	hasBuildNonce := sharedCache != nil && len(sharedCache.BuildNonce) > 0
+	if seed := seedHashInput(); len(seed) > 0 && hasBuildNonce {
+		if flagDebug {
+			fmt.Fprintln(cacheEncryptWarnWriter, "garble: cache encryption using per-build nonce; supply -seed for reusable encrypted cache entries or disable with -no-cache-encrypt")
 		}
-		if seed := seedHashInput(); len(seed) > 0 {
-			cacheEncryptFallbackOnce.Do(func() {
-				fmt.Fprintln(cacheEncryptWarnWriter, "garble: cache encryption using per-build nonce; supply -seed for reusable encrypted cache entries")
-			})
-			return seed, true
-		}
+		return seed, true
 	}
 	cacheEncryptWarnOnce.Do(func() {
-		fmt.Fprintln(cacheEncryptWarnWriter, "garble: cache encryption disabled because no seed is available; pass -seed or -cache-encrypt-nonce, or acknowledge with -no-cache-encrypt")
+		fmt.Fprintln(cacheEncryptWarnWriter, "garble: cache encryption disabled because no seed or build nonce is available; pass -seed or disable with -no-cache-encrypt")
 	})
 	return nil, false
 }

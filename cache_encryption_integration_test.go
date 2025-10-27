@@ -8,12 +8,16 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
 func TestCacheEncryptionIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires building garble binary and spawning external processes")
+	}
+	if strings.Contains(runtime.GOROOT(), "/pkg/mod/golang.org/toolchain@") {
+		t.Skip("integration test requires a local toolchain GOROOT")
 	}
 
 	garbleBin := buildGarbleBinary(t)
@@ -46,6 +50,7 @@ func main() {
 		"GARBLE_CACHE="+cacheDir,
 		"GOCACHE="+goCacheDir,
 		"GARBLE_BUILD_NONCE=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		"GOTOOLCHAIN=local",
 	)
 
 	runGarbleBuild(t, garbleBin, moduleDir, append([]string{}, baseEnv...), "-seed="+seed)
@@ -87,7 +92,7 @@ func main() {
 		t.Fatalf("failed to clear cache: %v", err)
 	}
 
-	runGarbleBuild(t, garbleBin, moduleDir, append([]string{}, baseEnv...), "-cache-encrypt-nonce")
+	runGarbleBuild(t, garbleBin, moduleDir, append([]string{}, baseEnv...))
 
 	if !cacheHasFiles(t, cacheDir) {
 		t.Fatalf("expected cache files after nonce-backed encrypted build")
@@ -95,7 +100,7 @@ func main() {
 
 	for _, data := range cacheFileBytes(t, cacheDir) {
 		if err := tryGobDecode(data); err == nil {
-			t.Fatalf("nonce-backed encrypted cache unexpectedly decodable via gob")
+			t.Fatalf("seedless encrypted cache unexpectedly decodable via gob")
 		}
 	}
 }
@@ -114,7 +119,7 @@ func buildGarbleBinary(t *testing.T) string {
 	if wd, err := os.Getwd(); err == nil {
 		cmd.Dir = wd
 	}
-	cmd.Env = os.Environ()
+	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("failed to build garble binary: %v\n%s", err, out)
 	}

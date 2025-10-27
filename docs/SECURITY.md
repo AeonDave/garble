@@ -809,19 +809,17 @@ func deriveCacheKey(seed []byte) []byte {
 
 ### Activation Conditions
 
-Cache encryption is **enabled by default** when:
-1. A seed is available (`-seed` flag or inherited)
-2. `-no-cache-encrypt` flag is **NOT** present
+Cache encryption is **enabled by default** when `-no-cache-encrypt` is **not** present. Garble uses the CLI seed if supplied; otherwise it derives a per-build key from the build nonce so entries remain encrypted but cannot be reused across builds without the same nonce.
 
 ```sh
-# Encrypted cache (default with seed)
+# Encrypted cache with explicit seed (reusable entries)
 garble -seed=<base64> build
 
 # Explicitly disable encryption
 garble -seed=<base64> -no-cache-encrypt build
 
-# No encryption (no seed)
-garble build  # Cache remains plaintext
+# Seedless build still encrypted (per-build key from GARBLE_BUILD_NONCE or the generated nonce)
+garble build
 ```
 
 ### Shared Cache vs Persistent Cache

@@ -10,7 +10,7 @@
 
 Encrypt the garble build cache to prevent leakage of obfuscation mappings and package metadata stored on disk.
 
-> **2025 update:** In addition to seed-driven keys, Garble now exposes `-cache-encrypt-nonce` so builds without a CLI seed can still encrypt caches using the build nonce. This produces per-build cache entries and is opt-in to preserve previous sharing semantics.
+> **2025 update:** In addition to seed-driven keys, Garble now derives cache-encryption keys from the build nonce whenever no CLI seed is provided. This produces per-build cache entries so the cache remains encrypted even for seedless builds.
 
 ---
 
@@ -315,7 +315,7 @@ func saveSharedCache() (string, error) {
             return "", err
         }
     } else {
-        // Fallback: unencrypted (when -no-cache-encrypt) or missing seed without -cache-encrypt-nonce
+        // Fallback: unencrypted only when -no-cache-encrypt is requested or no nonce is available
         if err := writeGobExclusive(cachePath, &sharedCache); err != nil {
             return "", err
         }
