@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"strings"
 )
 
 // KeyProvider generates per-literal keying material for encryption-based obfuscators.
@@ -28,10 +29,10 @@ const (
 
 // hkdfKeyProvider implements KeyProvider using HKDF-SHA256.
 type hkdfKeyProvider struct {
-	prk         []byte
-	packageSalt []byte
-	fileID      string
-	counter     uint64
+	masterSecret []byte
+	packageSalt  []byte
+	fileID       string
+	counter      uint64
 }
 
 // NewHKDFKeyProvider constructs a KeyProvider backed by HKDF-SHA256.
@@ -47,15 +48,12 @@ func NewHKDFKeyProvider(masterSecret, packageSalt []byte, fileID string) KeyProv
 	if len(packageSalt) == 0 {
 		panic("literals: package salt for HKDF provider is empty")
 	}
-	prk, err := hkdf.Extract(sha256.New, masterSecret, packageSalt)
-	if err != nil {
-		panic(fmt.Sprintf("literals: hkdf extract failed: %v", err))
-	}
+	masterCopy := append([]byte(nil), masterSecret...)
 	saltCopy := append([]byte(nil), packageSalt...)
 	return &hkdfKeyProvider{
-		prk:         prk,
-		packageSalt: saltCopy,
-		fileID:      fileID,
+		masterSecret: masterCopy,
+		packageSalt:  saltCopy,
+		fileID:       fileID,
 	}
 }
 
@@ -67,30 +65,22 @@ func (p *hkdfKeyProvider) next(context keyContext, size int) []byte {
 	idx := p.counter
 	p.counter++
 
-	info := make([]byte, len(context)+1+len(p.packageSalt)+1+len(p.fileID)+1+8)
-	copy(info, context)
-	offset := len(context)
-	info[offset] = 0
-	offset++
-	copy(info[offset:], p.packageSalt)
-	offset += len(p.packageSalt)
-	info[offset] = 0
-	offset++
-	copy(info[offset:], p.fileID)
-	offset += len(p.fileID)
-	info[offset] = 0
-	offset++
-	binary.BigEndian.PutUint64(info[offset:], idx)
+	var infoBuilder strings.Builder
+	infoBuilder.Grow(len(context) + 1 + len(p.packageSalt) + 1 + len(p.fileID) + 1 + 8)
+	infoBuilder.WriteString(string(context))
+	infoBuilder.WriteByte(0)
+	infoBuilder.Write(p.packageSalt)
+	infoBuilder.WriteByte(0)
+	infoBuilder.WriteString(p.fileID)
+	infoBuilder.WriteByte(0)
+	var counterBytes [8]byte
+	binary.BigEndian.PutUint64(counterBytes[:], idx)
+	infoBuilder.Write(counterBytes[:])
 
-	okm, err := hkdf.Expand(sha256.New, p.prk, string(info), size)
+	material, err := hkdf.Key(sha256.New, p.masterSecret, p.packageSalt, infoBuilder.String(), size)
 	if err != nil {
-		panic(fmt.Sprintf("literals: hkdf expand failed: %v", err))
+		panic(fmt.Sprintf("literals: hkdf key derivation failed: %v", err))
 	}
-	if len(okm) != size {
-		panic("literals: hkdf expand returned unexpected length")
-	}
-	material := make([]byte, size)
-	copy(material, okm)
 	return material
 }
 
