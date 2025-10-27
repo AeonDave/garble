@@ -207,7 +207,6 @@ func obfuscateIrreversible(ctx *obfRand, data []byte, extKeys []*externalKey) *a
 		},
 	})
 
-	block.List = append(block.List, ah.ReturnStmt(ast.NewIdent("data")))
 	return block
 }
 

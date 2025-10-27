@@ -43,7 +43,6 @@ func (h *irreversibleInlineHelper) generateInlineCode() string {
 	loadName := h.nameFunc(h.rand, "load64")
 	storeName := h.nameFunc(h.rand, "store64")
 	roundName := h.nameFunc(h.rand, "round")
-	sboxName := h.nameFunc(h.rand, "sbox")
 	invName := h.nameFunc(h.rand, "invSbox")
 
 	return fmt.Sprintf(`
@@ -54,7 +53,6 @@ func %s(data []byte, subkeys []uint64, originalLen int) []byte {
         if len(data)%%%d != 0 || len(subkeys) == 0 {
                 return data
         }
-        %s := [...]byte%s
         %s := [...]byte%s
         %s := func(x uint64, r uint) uint64 {
                 r &= 63
@@ -106,7 +104,6 @@ func %s(data []byte, subkeys []uint64, originalLen int) []byte {
 `,
 		h.funcName,
 		irreversibleBlockSize,
-		sboxName, formatByteArrayLiteral(irreversibleSBox),
 		invName, formatByteArrayLiteral(irreversibleInvSBox),
 		rotateName,
 		loadName,
