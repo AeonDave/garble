@@ -33,6 +33,11 @@ var (
 	pkgCacheMem = make(map[[sha256.Size]byte]pkgCache)
 )
 
+var (
+	cacheEncryptWarnOnce   sync.Once
+	cacheEncryptWarnWriter io.Writer = os.Stderr
+)
+
 // pkgCache contains information about a package that will be stored in fsCache.
 // Note that pkgCache is "deep", containing information about all packages
 // which are transitive dependencies as well.
@@ -54,24 +59,34 @@ func (c *pkgCache) CopyFrom(c2 pkgCache) {
 	maps.Copy(c.ReflectObjectNames, c2.ReflectObjectNames)
 }
 
-func cacheEncryptionSeed() []byte {
+func cacheEncryptionSeed() ([]byte, bool) {
 	if !flagCacheEncrypt {
-		return nil
+		return nil, false
 	}
 	if sharedCache != nil && len(sharedCache.OriginalSeed) > 0 {
-		return sharedCache.OriginalSeed
+		return sharedCache.OriginalSeed, false
 	}
 	if flagSeed.present() {
-		return flagSeed.bytes
+		return flagSeed.bytes, false
 	}
-	return nil
+	hasBuildNonce := sharedCache != nil && len(sharedCache.BuildNonce) > 0
+	if seed := seedHashInput(); len(seed) > 0 && hasBuildNonce {
+		if flagDebug {
+			fmt.Fprintln(cacheEncryptWarnWriter, "garble: cache encryption using per-build nonce; supply -seed for reusable encrypted cache entries or disable with -no-cache-encrypt")
+		}
+		return seed, true
+	}
+	cacheEncryptWarnOnce.Do(func() {
+		fmt.Fprintln(cacheEncryptWarnWriter, "garble: cache encryption disabled because no seed or build nonce is available; pass -seed or disable with -no-cache-encrypt")
+	})
+	return nil, false
 }
 
 func decodePkgCacheBytes(data []byte) (pkgCache, error) {
 	var loaded pkgCache
 	var decryptErr error
 
-	if seed := cacheEncryptionSeed(); len(seed) > 0 {
+	if seed, _ := cacheEncryptionSeed(); len(seed) > 0 {
 		if err := cacheenc.Decrypt(data, seed, &loaded); err == nil {
 			return loaded, nil
 		} else {
@@ -293,7 +308,7 @@ func computePkgCache(fsCache *cache.Cache, lpkg *listedPackage, pkg *types.Packa
 
 	// Encrypt cache if flag enabled and seed present
 	// Use sharedCache.OriginalSeed (shared across toolexec processes)
-	if seed := cacheEncryptionSeed(); len(seed) > 0 {
+	if seed, _ := cacheEncryptionSeed(); len(seed) > 0 {
 		encrypted, err := cacheenc.Encrypt(computed, seed)
 		if err != nil {
 			return pkgCache{}, fmt.Errorf("cache encryption failed: %v", err)

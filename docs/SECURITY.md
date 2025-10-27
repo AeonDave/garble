@@ -756,7 +756,7 @@ Encrypt Garble's persistent build cache to prevent offline analysis of obfuscati
 │     data := readFile($GARBLE_CACHE/<action-id>)                 │
 │                                                                 │
 │  2. Check if encrypted (has seed)                               │
-│     if seed := cacheEncryptionSeed(); seed != nil {             │
+│     if seed, _ := cacheEncryptionSeed(); len(seed) > 0 {        │
 │         // Decrypt path                                         │
 │     } else {                                                    │
 │         // Legacy plaintext gob fallback                        │
@@ -809,19 +809,17 @@ func deriveCacheKey(seed []byte) []byte {
 
 ### Activation Conditions
 
-Cache encryption is **enabled by default** when:
-1. A seed is available (`-seed` flag or inherited)
-2. `-no-cache-encrypt` flag is **NOT** present
+Cache encryption is **enabled by default** when `-no-cache-encrypt` is **not** present. Garble uses the CLI seed if supplied; otherwise it derives a per-build key from the build nonce so entries remain encrypted but cannot be reused across builds without the same nonce.
 
 ```sh
-# Encrypted cache (default with seed)
+# Encrypted cache with explicit seed (reusable entries)
 garble -seed=<base64> build
 
 # Explicitly disable encryption
 garble -seed=<base64> -no-cache-encrypt build
 
-# No encryption (no seed)
-garble build  # Cache remains plaintext
+# Seedless build still encrypted (per-build key from GARBLE_BUILD_NONCE or the generated nonce)
+garble build
 ```
 
 ### Shared Cache vs Persistent Cache
@@ -847,7 +845,7 @@ ASCON-128's authentication tag provides cryptographic verification:
 Legacy plaintext caches are automatically detected and read:
 ```go
 func decodePkgCacheBytes(data []byte) (pkgCache, error) {
-    if seed := cacheEncryptionSeed(); len(seed) > 0 {
+    if seed, _ := cacheEncryptionSeed(); len(seed) > 0 {
         // Try ASCON decryption
     return cache.Decrypt(data, seed, &shared)
     }

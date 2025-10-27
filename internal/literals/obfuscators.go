@@ -51,9 +51,11 @@ func (k *externalKey) IsUsed() bool {
 	return k.refs > 0
 }
 
-// obfuscator takes a byte slice and converts it to a ast.BlockStmt
+// obfuscator takes a byte slice and converts it to an ast.BlockStmt.
+// Implementations receive the full obfuscation context so they can access
+// deterministic keying material and helpers in addition to pseudorandomness.
 type obfuscator interface {
-	obfuscate(obfRand *mathrand.Rand, data []byte, extKeys []*externalKey) *ast.BlockStmt
+	obfuscate(ctx *obfRand, data []byte, extKeys []*externalKey) *ast.BlockStmt
 }
 
 var (
@@ -258,8 +260,10 @@ type obfRand struct {
 	*mathrand.Rand
 	testObfuscator obfuscator
 
-	proxyDispatcher *proxyDispatcher
-	asconHelper     *asconInlineHelper
+	proxyDispatcher    *proxyDispatcher
+	asconHelper        *asconInlineHelper
+	irreversibleHelper *irreversibleInlineHelper
+	keyProvider        KeyProvider
 }
 
 func (r *obfRand) nextObfuscator() obfuscator {
@@ -270,7 +274,7 @@ func (r *obfRand) nextObfuscator() obfuscator {
 	// Use ASCON obfuscator with higher probability for better security
 	// 60% ASCON, 40% other obfuscators
 	if r.Float32() < 0.6 {
-		return newAsconObfuscator(r.asconHelper)
+		return newAsconObfuscator(r.asconHelper, r.keyProvider)
 	}
 
 	if obf := pickGeneralStrategy(r.Rand); obf != nil {
@@ -288,7 +292,7 @@ func (r *obfRand) nextLinearTimeObfuscator() obfuscator {
 	// For large literals, prefer ASCON for security
 	// ASCON has linear time complexity and provides authenticated encryption
 	if r.Float32() < 0.7 {
-		return newAsconObfuscator(r.asconHelper)
+		return newAsconObfuscator(r.asconHelper, r.keyProvider)
 	}
 
 	if obf := pickLinearStrategy(r.Rand); obf != nil {
@@ -298,8 +302,12 @@ func (r *obfRand) nextLinearTimeObfuscator() obfuscator {
 	return simpleObfuscator
 }
 
-func newObfRand(rand *mathrand.Rand, file *ast.File, nameFunc NameProviderFunc) *obfRand {
+func newObfRand(rand *mathrand.Rand, file *ast.File, nameFunc NameProviderFunc, keys KeyProvider) *obfRand {
+	if keys == nil {
+		panic("literals: nil key provider for obfuscator")
+	}
 	testObf := testPkgToObfuscatorMap[file.Name.Name]
 	asconHelper := newAsconInlineHelper(rand, nameFunc)
-	return &obfRand{rand, testObf, newProxyDispatcher(rand, nameFunc), asconHelper}
+	irreversibleHelper := newIrreversibleInlineHelper(rand, nameFunc)
+	return &obfRand{rand, testObf, newProxyDispatcher(rand, nameFunc), asconHelper, irreversibleHelper, keys}
 }
