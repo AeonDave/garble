@@ -756,7 +756,7 @@ Encrypt Garble's persistent build cache to prevent offline analysis of obfuscati
 │     data := readFile($GARBLE_CACHE/<action-id>)                 │
 │                                                                 │
 │  2. Check if encrypted (has seed)                               │
-│     if seed := cacheEncryptionSeed(); seed != nil {             │
+│     if seed, _ := cacheEncryptionSeed(); len(seed) > 0 {        │
 │         // Decrypt path                                         │
 │     } else {                                                    │
 │         // Legacy plaintext gob fallback                        │
@@ -847,7 +847,7 @@ ASCON-128's authentication tag provides cryptographic verification:
 Legacy plaintext caches are automatically detected and read:
 ```go
 func decodePkgCacheBytes(data []byte) (pkgCache, error) {
-    if seed := cacheEncryptionSeed(); len(seed) > 0 {
+    if seed, _ := cacheEncryptionSeed(); len(seed) > 0 {
         // Try ASCON decryption
     return cache.Decrypt(data, seed, &shared)
     }

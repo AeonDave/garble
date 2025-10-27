@@ -82,6 +82,22 @@ func main() {
 	if !decoded {
 		t.Fatalf("unencrypted cache should contain at least one gob-decodable entry")
 	}
+
+	if err := os.RemoveAll(cacheDir); err != nil {
+		t.Fatalf("failed to clear cache: %v", err)
+	}
+
+	runGarbleBuild(t, garbleBin, moduleDir, append([]string{}, baseEnv...), "-cache-encrypt-nonce")
+
+	if !cacheHasFiles(t, cacheDir) {
+		t.Fatalf("expected cache files after nonce-backed encrypted build")
+	}
+
+	for _, data := range cacheFileBytes(t, cacheDir) {
+		if err := tryGobDecode(data); err == nil {
+			t.Fatalf("nonce-backed encrypted cache unexpectedly decodable via gob")
+		}
+	}
 }
 
 func buildGarbleBinary(t *testing.T) string {
