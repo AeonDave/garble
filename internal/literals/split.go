@@ -63,7 +63,8 @@ func encryptChunks(chunks [][]byte, op token.Token, key byte) {
 	}
 }
 
-func (split) obfuscate(rand *mathrand.Rand, data []byte, extKeys []*externalKey) *ast.BlockStmt {
+func (split) obfuscate(ctx *obfRand, data []byte, extKeys []*externalKey) *ast.BlockStmt {
+	rand := ctx.Rand
 	var chunks [][]byte
 	// Short arrays should be divided into single-byte fragments
 	if len(data)/maxChunkSize < minCaseCount {

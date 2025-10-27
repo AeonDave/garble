@@ -616,7 +616,7 @@ func (tf *transformer) obfuscateAndEmit(files []*ast.File, paths []string) ([]st
 		if err := tf.transformDirectives(file.Comments); err != nil {
 			return nil, err
 		}
-		file = tf.transformGoFile(file)
+		file = tf.transformGoFile(file, paths[i])
 		file.Name.Name = tf.curPkg.obfuscatedPackageName()
 
 		src, err := printFile(tf.curPkg, file)
@@ -1023,7 +1023,7 @@ func (tf *transformer) useAllImports(file *ast.File) {
 }
 
 // transformGoFile obfuscates the provided Go syntax file.
-func (tf *transformer) transformGoFile(file *ast.File) *ast.File {
+func (tf *transformer) transformGoFile(file *ast.File, filePath string) *ast.File {
 	// Only obfuscate the literals here if the flag is on
 	// and if the package in question is to be obfuscated.
 	//
@@ -1032,13 +1032,15 @@ func (tf *transformer) transformGoFile(file *ast.File) *ast.File {
 	// and that's not allowed in the runtime itself.
 	var litBuilder *literals.Builder
 	if flagLiterals && tf.curPkg.ToObfuscate {
-		litBuilder = literals.NewBuilder(tf.obfRand, file, randomName)
+		keyProvider := tf.newLiteralKeyProvider(filePath)
+		litBuilder = literals.NewBuilder(tf.obfRand, file, randomName, literals.BuilderConfig{KeyProvider: keyProvider})
 		file = litBuilder.ObfuscateFile(file, tf.info, tf.linkerVariableStrings)
 
 		// some imported constants might not be needed anymore, remove unnecessary imports
 		tf.useAllImports(file)
 	} else if len(tf.linkerVariableStrings) > 0 {
-		litBuilder = literals.NewBuilder(tf.obfRand, file, randomName)
+		keyProvider := tf.newLiteralKeyProvider(filePath)
+		litBuilder = literals.NewBuilder(tf.obfRand, file, randomName, literals.BuilderConfig{KeyProvider: keyProvider})
 	}
 
 	if litBuilder != nil {
@@ -1239,6 +1241,45 @@ func (tf *transformer) transformGoFile(file *ast.File) *ast.File {
 	}
 
 	return astutil.Apply(file, pre, post).(*ast.File)
+}
+
+func (tf *transformer) newLiteralKeyProvider(filePath string) literals.KeyProvider {
+	master := seedHashInput()
+	if len(master) == 0 {
+		master = tf.curPkg.GarbleActionID[:]
+	}
+	pkgSalt := tf.curPkg.GarbleActionID[:]
+	fileID := tf.literalFileIdentifier(filePath)
+	return literals.NewHKDFKeyProvider(master, pkgSalt, fileID)
+}
+
+func (tf *transformer) literalFileIdentifier(path string) string {
+	if path == "" {
+		if tf.curPkg.ImportPath != "" {
+			return filepath.ToSlash(tf.curPkg.ImportPath)
+		}
+		return "unknown"
+	}
+	fileID := path
+	if tf.curPkg.Dir != "" {
+		if rel, err := filepath.Rel(tf.curPkg.Dir, path); err == nil && rel != "" && rel != "." {
+			fileID = rel
+		}
+	}
+	fileID = filepath.ToSlash(fileID)
+	if fileID == "" || fileID == "." {
+		base := filepath.Base(path)
+		if base != "" && base != "." {
+			fileID = filepath.ToSlash(base)
+		}
+	}
+	if fileID == "" || fileID == "." {
+		if tf.curPkg.ImportPath != "" {
+			return filepath.ToSlash(tf.curPkg.ImportPath)
+		}
+		return "unknown"
+	}
+	return fileID
 }
 
 func (tf *transformer) injectLinkerVariableInit(builder *literals.Builder, file *ast.File) {
