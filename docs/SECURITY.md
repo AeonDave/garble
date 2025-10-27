@@ -183,7 +183,7 @@ Encrypt function entry point offsets in the runtime symbol table (`pclntab`) to 
 │                                                                     │
 │     func (f funcInfo) entry() uintptr {                             │
 │       // Decrypt on-the-fly                                         │
-│       decrypted := linkFeistelDecrypt(f.entryoff, uint32(f.nameOff))│
+│       decrypted := linkFeistelDecrypt(f.entryOff, uint32(f.nameOff))│
 │       return f.datap.textAddr(decrypted)                            │
 │     }                                                               │
 │                                                                     │
@@ -267,7 +267,7 @@ func linkFeistelDecrypt(value, tweak uint32) uint32 {
 
 // Patched entry() method
 func (f funcInfo) entry() uintptr {
-    decrypted := linkFeistelDecrypt(f.entryoff, uint32(f.nameOff))
+    decrypted := linkFeistelDecrypt(f.entryOff, uint32(f.nameOff))
     return f.datap.textAddr(decrypted)
 }
 ```
@@ -277,7 +277,7 @@ func (f funcInfo) entry() uintptr {
 - Extra frames would break stack trace accuracy
 - Functions remain invisible to the call stack mechanism
 
-#### Linker Patch (`internal/linker/patches/go1.25/0003-add-entryOff-encryption.patch`)
+#### Linker Patch (`internal/linker/patches/go1.25/0002-add-entryOff-encryption.patch`)
 
 Applied to `cmd/link/internal/ld/pcln.go`:
 
@@ -334,7 +334,7 @@ for _, offset := range entryOffLocations {
 - `feistel.go`: Core encryption/decryption logic
 - `runtime_patch.go`: Runtime injection
 - `internal/linker/linker.go`: LINK_SEED environment setup
-- `internal/linker/patches/go1.25/0003-add-entryOff-encryption.patch`: Linker modifications
+- `internal/linker/patches/go1.25/0002-add-entryOff-encryption.patch`: Linker modifications
 
 ---
 
@@ -1233,7 +1233,7 @@ fmt.Errorf("database %s not found", dbName)
 - `feistel.go`: Feistel encryption/decryption primitives
 - `runtime_patch.go`: Runtime injection logic
 - `internal/linker/linker.go`: Linker patching coordination
-- `internal/linker/patches/go1.25/0003-add-entryOff-encryption.patch`: Linker modifications
+- `internal/linker/patches/go1.25/0002-add-entryOff-encryption.patch`: Linker modifications
 
 #### Literals
 - `internal/literals/ascon.go`: ASCON-128 core implementation
@@ -1286,3 +1286,5 @@ fmt.Errorf("database %s not found", dbName)
 - **Last Updated**: October 8, 2025
 - **Next Review**: December 2025
 - **Owner**: x430n Spectre Team
+
+

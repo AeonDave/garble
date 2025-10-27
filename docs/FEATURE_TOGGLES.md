@@ -61,12 +61,12 @@ Garble automatically applies the following flags to build commands. You **do not
 
 | Flag                              | Applied When                          | Purpose                                                                                                                        | Code Reference                                |
 |-----------------------------------|---------------------------------------|--------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------|
-| `-trimpath`                       | Always (all `go list/build` commands) | Strips filesystem paths from binaries. Garble extends this with `sharedTempDir` handling to prevent temporary directory leaks. | `cache_shared.go:290`, `transformer.go:76-82` |
-| `-buildvcs=false`                 | Always                                | Omits VCS metadata (git commit hash, dirty state) from binaries.                                                               | `cache_shared.go:290`                         |
-| `-ldflags="-w"`                   | Link phase only                       | Strips DWARF debugging information (file/line mappings, variable names).                                                       | `transformer.go:1328`                         |
-| `-ldflags="-s"`                   | Link phase only                       | Strips symbol table and debug sections completely.                                                                             | `transformer.go:1328`                         |
-| `-buildid=""`                     | Link phase only                       | Removes Go build ID to prevent binary tracking across builds.                                                                  | `transformer.go:1324`                         |
-| `-X=runtime.buildVersion=unknown` | Link phase only                       | Replaces `runtime.Version()` output with "unknown" instead of "go1.X.Y".                                                       | `transformer.go:1322`                         |
+| `-trimpath`                       | Always (all `go list/build` commands) | Strips filesystem paths from binaries. Garble extends this with `sharedTempDir` handling to prevent temporary directory leaks. | `cache_shared.go`, `transformer.go` |
+| `-buildvcs=false`                 | Always                                | Omits VCS metadata (git commit hash, dirty state) from binaries.                                                               | `cache_shared.go`                         |
+| `-ldflags="-w"`                   | Link phase only                       | Strips DWARF debugging information (file/line mappings, variable names).                                                       | `transformer.go`                         |
+| `-ldflags="-s"`                   | Link phase only                       | Strips symbol table and debug sections completely.                                                                             | `transformer.go`                         |
+| `-buildid=""`                     | Link phase only                       | Removes Go build ID to prevent binary tracking across builds.                                                                  | `transformer.go`                         |
+| `-X=runtime.buildVersion=unknown` | Link phase only                       | Replaces `runtime.Version()` output with "unknown" instead of "go1.X.Y".                                                       | `transformer.go`                         |
 
 **Important Notes:**
 - These flags are **hardcoded** and cannot be overridden by user input.
@@ -78,3 +78,4 @@ Garble automatically applies the following flags to build commands. You **do not
 - CLI flags are parsed once at process startup; re-entrant invocations inherit state via `GARBLE_SHARED` and the cached seed/nonce.
 - When both a CLI flag and an environment variable target the same feature, the CLI flag wins (`-controlflow` over `GARBLE_CONTROLFLOW`, `-seed` over any inherited entropy).
 - Encryption and other security-sensitive features rely on both `-seed` and the build nonce; keep them aligned when creating reproducible yet hardened builds.
+
