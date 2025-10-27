@@ -26,7 +26,6 @@ import (
 	"runtime"
 	"runtime/debug"
 	"runtime/pprof"
-	"strconv"
 	"strings"
 	"time"
 
@@ -364,7 +363,6 @@ func mainErr(args []string) error {
 			defer unlock()
 
 			executablePath = modifiedLinkPath
-			_ = os.Setenv(linker.MagicValueEnv, strconv.FormatUint(uint64(magicValue()), 10))
 
 			// Phase 2: Feistel encryption (runtime will use this instead of XOR)
 			seed := feistelSeed()

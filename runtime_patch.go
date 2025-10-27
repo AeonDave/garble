@@ -12,54 +12,6 @@ import (
 	ah "github.com/AeonDave/garble/internal/asthelper"
 )
 
-// updateMagicValue updates hardcoded value of hdr.magic
-// when verifying header in symtab.go
-func updateMagicValue(file *ast.File, magicValue uint32) {
-	magicUpdated := false
-
-	// Find `hdr.magic != 0xfffffff?` in symtab.go and update to random magicValue
-	updateMagic := func(node ast.Node) bool {
-		binExpr, ok := node.(*ast.BinaryExpr)
-		if !ok || binExpr.Op != token.NEQ {
-			return true
-		}
-
-		selectorExpr, ok := binExpr.X.(*ast.SelectorExpr)
-		if !ok {
-			return true
-		}
-
-		if ident, ok := selectorExpr.X.(*ast.Ident); !ok || ident.Name != "hdr" {
-			return true
-		}
-		if selectorExpr.Sel.Name != "magic" {
-			return true
-		}
-
-		if _, ok := binExpr.Y.(*ast.BasicLit); !ok {
-			return true
-		}
-		binExpr.Y = &ast.BasicLit{
-			Kind:  token.INT,
-			Value: strconv.FormatUint(uint64(magicValue), 10),
-		}
-		magicUpdated = true
-		return false
-	}
-
-	for _, decl := range file.Decls {
-		funcDecl, ok := decl.(*ast.FuncDecl)
-		if ok && funcDecl.Name.Name == "moduledataverify1" {
-			ast.Inspect(funcDecl, updateMagic)
-			break
-		}
-	}
-
-	if !magicUpdated {
-		panic("magic value not updated")
-	}
-}
-
 // updateEntryOffsetFeistel injects Feistel decryption into runtime.funcInfo.entry()
 // Uses 4-round Feistel network with helper functions marked //go:nosplit to avoid
 // adding stack frames that would break runtime.Caller() depth tracking.

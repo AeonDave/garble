@@ -40,7 +40,6 @@ These are populated by Garble itself so that its `toolexec` subprocesses and the
 | Variable | Set by | Purpose | Notes |
 | --- | --- | --- | --- |
 | `GARBLE_SHARED` | Top-level Garble process | Points child processes at the shared gob-encoded build state. | Cleared and deleted after the build. A pre-existing value allows nested invocations to reuse the same workspace. |
-| `GARBLE_LINK_MAGIC` | Garble (when wrapping `cmd/link`) | Signals the patched linker to enable Garble's metadata hooks. | Checked by linker patches to avoid running on unpatched binaries. |
 | `LINK_SEED` | Garble | Base64-encoded 32-byte Feistel seed used to encrypt runtime metadata (e.g. method tables). | Must be present; linker panics if missing. |
 | `GARBLE_LINK_REVERSIBLE` | Garble | Communicates whether reversible mode is enabled. | Set to `true` when `-reversible`; otherwise `false`. |
 | `GARBLE_LINK_TINY` | Garble | Communicates whether tiny binaries are requested. | Read by linker patches to strip additional metadata. |

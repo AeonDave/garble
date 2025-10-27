@@ -125,12 +125,19 @@ var valueGenerators = map[types.Type]func(rand *mathrand.Rand, targetType types.
 			// Int can be cast to any numeric type, but compiler checks for overflow when casting constants.
 			// To prevent this, limiting the maximum value
 			switch basic.Kind() {
-			case types.Int8, types.Byte:
+			case types.Int8:
 				maxValue = math.MaxInt8
-			case types.Int16, types.Uint16:
+			case types.Uint8:
+				// Includes types.Byte (alias of uint8).
+				maxValue = math.MaxUint8
+			case types.Int16:
 				maxValue = math.MaxInt16
-			default:
-				panic("unhandled default case")
+			case types.Uint16:
+				maxValue = math.MaxInt16
+			case types.Int, types.Int32, types.Uint, types.Uint32, types.Int64, types.Uint64, types.UntypedInt:
+				// Keep default maxValue (math.MaxInt32) which is safely convertible to all wider integer types.
+			case types.Uintptr:
+				// uintptr accepts positive integers; default limit keeps conversion safe.
 			}
 		}
 		return &ast.BasicLit{

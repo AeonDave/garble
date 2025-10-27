@@ -1,6 +1,3 @@
-// Copyright (c) 2025, The Garble Authors.
-// See LICENSE for licensing information.
-
 package literals
 
 import (

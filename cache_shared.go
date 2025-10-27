@@ -29,6 +29,7 @@ import (
 // Note that we fill this cache once from the root process in saveListedPackages,
 // store it into a temporary file via gob encoding, and then reuse that file
 // in each of the garble toolexec sub-processes.
+
 type sharedCacheType struct {
 	ForwardBuildFlags []string // build flags fed to the original "garble ..." command
 
@@ -358,6 +359,9 @@ func appendListedPackages(packages []string, mainBuild bool) error {
 			} else if !mainBuild && strings.Contains(perr.Err, "is not in std") {
 				// When we support multiple Go versions at once, some packages may only
 				// exist in the newer version, so we fail to list them with the older.
+			} else if !mainBuild && strings.Contains(perr.Err, "not a dependency") {
+				// Pack-required packages may not be dependencies of the current package
+				// This is expected and should be ignored
 			} else {
 				if pkgErrors.Len() > 0 {
 					pkgErrors.WriteString("\n")
@@ -378,7 +382,9 @@ func appendListedPackages(packages []string, mainBuild bool) error {
 		// "build constraints exclude all Go files" and can be ignored.
 		// Real build errors will still be surfaced by `go build -toolexec` later.
 		if sharedCache.ListedPackages[pkg.ImportPath] != nil {
-			return fmt.Errorf("duplicate package: %q", pkg.ImportPath)
+			// Package already loaded - this can happen when pack pre-loads stdlib packages
+			// that are also dependencies of the main build. Skip silently.
+			continue
 		}
 		if pkg.BuildID != "" {
 			actionID := decodeBuildIDHash(splitActionID(pkg.BuildID))

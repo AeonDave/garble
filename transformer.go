@@ -496,6 +496,7 @@ func (tf *transformer) seedObfuscationRand() error {
 		return fmt.Errorf("seed length %d shorter than 8 bytes", len(randSeed))
 	}
 	tf.obfRand = mathrand.New(mathrand.NewSource(int64(binary.BigEndian.Uint64(randSeed[:8]))))
+
 	return nil
 }
 
@@ -527,8 +528,14 @@ func (tf *transformer) applyControlFlowTransforms(files *[]*ast.File, paths *[]s
 		// that the current control-flow pipeline cannot rewrite safely.
 		mode = ctrlflow.ModeAnnotated
 	}
+
+	// Collect required packages (from control-flow only)
+	// Pack-required packages are added later in finalize-pack step,
+	// after garble_pack.go is generated.
+	var requiredPkgs []string
+
 	if !mode.Enabled() {
-		return nil, nil, nil
+		return nil, requiredPkgs, nil
 	}
 	ssaPkg := ssaBuildPkg(tf.pkg, *files, tf.info)
 
@@ -537,7 +544,7 @@ func (tf *transformer) applyControlFlowTransforms(files *[]*ast.File, paths *[]s
 		return nil, nil, err
 	}
 
-	var requiredPkgs []string
+	// Add control-flow required packages if control-flow generated a new file
 	if newFile != nil {
 		*files = append(*files, newFile)
 		*paths = append(*paths, newFileName)
@@ -600,7 +607,6 @@ func (tf *transformer) obfuscateAndEmit(files []*ast.File, paths []string) ([]st
 				tf.useAllImports(file)
 			}
 			if basename == "symtab.go" {
-				updateMagicValue(file, magicValue())
 				seed := feistelSeed()
 				var seedArray [32]byte
 				copy(seedArray[:], seed)
@@ -817,6 +823,7 @@ func (tf *transformer) processImportCfg(flags []string, requiredPkgs []string) (
 	// using for track required but not imported packages
 	var newIndirectImports map[string]bool
 	if requiredPkgs != nil {
+		log.Printf("DEBUG: processImportCfg called with %d requiredPkgs: %v", len(requiredPkgs), requiredPkgs)
 		newIndirectImports = make(map[string]bool)
 		for _, pkg := range requiredPkgs {
 			// unsafe is a special case, it's not a real dependency
@@ -826,6 +833,7 @@ func (tf *transformer) processImportCfg(flags []string, requiredPkgs []string) (
 
 			newIndirectImports[pkg] = true
 		}
+		log.Printf("DEBUG: newIndirectImports has %d packages", len(newIndirectImports))
 	}
 
 	for line := range strings.SplitSeq(string(data), "\n") {
@@ -903,12 +911,17 @@ func (tf *transformer) processImportCfg(flags []string, requiredPkgs []string) (
 		}
 
 		if len(newIndirectImports) > 0 {
-			return "", fmt.Errorf("cannot resolve required packages from action graph file: %v", requiredPkgs)
+			var unresolved []string
+			for pkg := range newIndirectImports {
+				unresolved = append(unresolved, pkg)
+			}
+			return "", fmt.Errorf("cannot resolve required packages: %v", unresolved)
 		}
 	}
 
 	for _, pair := range packagefiles {
 		impPath, pkgfile := pair[0], pair[1]
+
 		lpkg, err := listPackage(tf.curPkg, impPath)
 		if err != nil {
 			// TODO: it's unclear why an importcfg can include an import path
@@ -922,6 +935,9 @@ func (tf *transformer) processImportCfg(flags []string, requiredPkgs []string) (
 			}
 			return "", err
 		}
+
+		// obfuscatedImportPath() returns the original path for non-obfuscated packages,
+		// and returns the hashed path for obfuscated packages.
 		impPath = lpkg.obfuscatedImportPath()
 		_, _ = fmt.Fprintf(newCfg, "packagefile %s=%s\n", impPath, pkgfile)
 	}

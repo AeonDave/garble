@@ -7,6 +7,7 @@ require (
 	github.com/go-quicktest/qt v1.101.0
 	github.com/google/go-cmp v0.7.0
 	github.com/rogpeppe/go-internal v1.14.1
+	golang.org/x/crypto v0.43.0
 	golang.org/x/mod v0.29.0
 	golang.org/x/tools v0.38.0
 )
