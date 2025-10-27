@@ -82,6 +82,9 @@ func (p *hkdfKeyProvider) next(context keyContext, size int) []byte {
 	offset++
 	binary.BigEndian.PutUint64(info[offset:], idx)
 
+	// Go 1.25's crypto/hkdf exposes Expand as a convenience helper that returns
+	// the requested keying material directly. We still defensively clone the
+	// output to keep the provider's contract of returning caller-owned slices.
 	okm, err := hkdf.Expand(sha256.New, p.prk, string(info), size)
 	if err != nil {
 		panic(fmt.Sprintf("literals: hkdf expand failed: %v", err))
@@ -89,8 +92,7 @@ func (p *hkdfKeyProvider) next(context keyContext, size int) []byte {
 	if len(okm) != size {
 		panic("literals: hkdf expand returned unexpected length")
 	}
-	material := make([]byte, size)
-	copy(material, okm)
+	material := append([]byte(nil), okm...)
 	return material
 }
 
