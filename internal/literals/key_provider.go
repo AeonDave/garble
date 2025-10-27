@@ -1,10 +1,12 @@
 package literals
 
 import (
-	"crypto/hkdf"
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"io"
+
+	"golang.org/x/crypto/hkdf"
 )
 
 // KeyProvider generates per-literal keying material for encryption-based obfuscators.
@@ -47,13 +49,10 @@ func NewHKDFKeyProvider(masterSecret, packageSalt []byte, fileID string) KeyProv
 	if len(packageSalt) == 0 {
 		panic("literals: package salt for HKDF provider is empty")
 	}
-	prk, err := hkdf.Extract(sha256.New, masterSecret, packageSalt)
-	if err != nil {
-		panic(fmt.Sprintf("literals: hkdf extract failed: %v", err))
-	}
+	prk := hkdf.Extract(sha256.New, masterSecret, packageSalt)
 	saltCopy := append([]byte(nil), packageSalt...)
 	return &hkdfKeyProvider{
-		prk:         prk,
+		prk:         append([]byte(nil), prk...),
 		packageSalt: saltCopy,
 		fileID:      fileID,
 	}
@@ -82,15 +81,11 @@ func (p *hkdfKeyProvider) next(context keyContext, size int) []byte {
 	offset++
 	binary.BigEndian.PutUint64(info[offset:], idx)
 
-	okm, err := hkdf.Expand(sha256.New, p.prk, string(info), size)
-	if err != nil {
+	reader := hkdf.Expand(sha256.New, p.prk, info)
+	material := make([]byte, size)
+	if _, err := io.ReadFull(reader, material); err != nil {
 		panic(fmt.Sprintf("literals: hkdf expand failed: %v", err))
 	}
-	if len(okm) != size {
-		panic("literals: hkdf expand returned unexpected length")
-	}
-	material := make([]byte, size)
-	copy(material, okm)
 	return material
 }
 
