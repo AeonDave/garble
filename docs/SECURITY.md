@@ -26,20 +26,20 @@ This document provides the comprehensive technical security architecture of Garb
 
 ### Security Posture Snapshot
 
-| Component | Status | Implementation |
-|-----------|--------|----------------|
-| Runtime Metadata | ✅ Deployed | 4-round Feistel cipher with per-function tweak |
-| Literal Protection | ✅ Deployed | ASCON-128 inline + reversible simple obfuscator |
-| Name Hashing | ✅ Deployed | SHA-256 with per-build nonce mixing |
-| Reflection Oracle | ✅ Mitigated | Empty by default; opt-in via `-reversible` |
-| Cache Encryption | ✅ Deployed | ASCON-128 at rest with authentication |
-| Control-Flow | ⚠️ Optional | Multiple modes available; default off |
+| Component          | Status      | Implementation                                  |
+|--------------------|-------------|-------------------------------------------------|
+| Runtime Metadata   | ✅ Deployed  | 4-round Feistel cipher with per-function tweak  |
+| Literal Protection | ✅ Deployed  | ASCON-128 inline + reversible simple obfuscator |
+| Name Hashing       | ✅ Deployed  | SHA-256 with per-build nonce mixing             |
+| Reflection Oracle  | ✅ Mitigated | Empty by default; opt-in via `-reversible`      |
+| Cache Encryption   | ✅ Deployed  | ASCON-128 at rest with authentication           |
+| Control-Flow       | ⚠️ Optional | Multiple modes available; default off           |
 
 ### Key Security Properties
 
 - **Per-Build Uniqueness**: Every build uses a cryptographically random nonce mixed with the seed, ensuring symbol names and keys differ even with identical source code (unless explicitly reproduced).
 - **Metadata Hardening**: Runtime function tables are encrypted with format-preserving Feistel encryption; decryption happens transparently at runtime via injected helpers.
-- **Literal Protection**: Strings and constants are encrypted inline using NIST-standard ASCON-128 or multi-layer reversible transforms.
+- **Literal Protection**: Strings and constants are encrypted inline using NIST-standard ASCON-128 or multi-layer reversible transforms (see `docs/LITERAL_ENCRYPTION.md`).
 - **Reflection Suppression**: Original identifier names are omitted from binaries by default, eliminating the reverse-engineering oracle.
 - **Cache Security**: Build artifacts are encrypted at rest; tampering is detected via authentication tags.
 
@@ -183,7 +183,7 @@ Encrypt function entry point offsets in the runtime symbol table (`pclntab`) to 
 │                                                                     │
 │     func (f funcInfo) entry() uintptr {                             │
 │       // Decrypt on-the-fly                                         │
-│       decrypted := linkFeistelDecrypt(f.entryoff, uint32(f.nameOff))│
+│       decrypted := linkFeistelDecrypt(f.entryOff, uint32(f.nameOff))│
 │       return f.datap.textAddr(decrypted)                            │
 │     }                                                               │
 │                                                                     │
@@ -210,14 +210,14 @@ F(right uint16, tweak uint32, key uint32) → uint16:
 
 ### Security Properties
 
-| Property | Value | Security Benefit |
-|----------|-------|------------------|
-| **Key Size** | 4×32-bit (128-bit total) | Cryptographically strong key space |
-| **Rounds** | 4 | Sufficient for strong diffusion |
-| **Tweak** | nameOff (32-bit) | Each function encrypted uniquely |
-| **Diffusion** | ~100% | All output bits depend on all input bits |
-| **Non-linearity** | High | Resistant to linear cryptanalysis |
-| **Performance** | <10 CPU cycles | Negligible runtime overhead |
+| Property          | Value                    | Security Benefit                         |
+|-------------------|--------------------------|------------------------------------------|
+| **Key Size**      | 4×32-bit (128-bit total) | Cryptographically strong key space       |
+| **Rounds**        | 4                        | Sufficient for strong diffusion          |
+| **Tweak**         | nameOff (32-bit)         | Each function encrypted uniquely         |
+| **Diffusion**     | ~100%                    | All output bits depend on all input bits |
+| **Non-linearity** | High                     | Resistant to linear cryptanalysis        |
+| **Performance**   | <10 CPU cycles           | Negligible runtime overhead              |
 
 ### Why Feistel?
 
@@ -267,7 +267,7 @@ func linkFeistelDecrypt(value, tweak uint32) uint32 {
 
 // Patched entry() method
 func (f funcInfo) entry() uintptr {
-    decrypted := linkFeistelDecrypt(f.entryoff, uint32(f.nameOff))
+    decrypted := linkFeistelDecrypt(f.entryOff, uint32(f.nameOff))
     return f.datap.textAddr(decrypted)
 }
 ```
@@ -277,7 +277,7 @@ func (f funcInfo) entry() uintptr {
 - Extra frames would break stack trace accuracy
 - Functions remain invisible to the call stack mechanism
 
-#### Linker Patch (`internal/linker/patches/go1.25/0003-add-entryOff-encryption.patch`)
+#### Linker Patch (`internal/linker/patches/go1.25/0002-add-entryOff-encryption.patch`)
 
 Applied to `cmd/link/internal/ld/pcln.go`:
 
@@ -323,18 +323,18 @@ for _, offset := range entryOffLocations {
 
 ### Threat Mitigation
 
-| Attack | Mitigation | Residual Risk |
-|--------|------------|---------------|
-| Static pclntab enumeration | Entry offsets encrypted | Dynamic tracing observes actual behavior |
-| Pattern matching | Per-function tweak breaks patterns | - |
-| Brute force key recovery | 128-bit keyspace infeasible | - |
-| Known-plaintext attack | Tweak ensures unique ciphertexts | Requires recovering seed |
+| Attack                     | Mitigation                         | Residual Risk                            |
+|----------------------------|------------------------------------|------------------------------------------|
+| Static pclntab enumeration | Entry offsets encrypted            | Dynamic tracing observes actual behavior |
+| Pattern matching           | Per-function tweak breaks patterns | -                                        |
+| Brute force key recovery   | 128-bit keyspace infeasible        | -                                        |
+| Known-plaintext attack     | Tweak ensures unique ciphertexts   | Requires recovering seed                 |
 
 ### Implementation References
 - `feistel.go`: Core encryption/decryption logic
 - `runtime_patch.go`: Runtime injection
 - `internal/linker/linker.go`: LINK_SEED environment setup
-- `internal/linker/patches/go1.25/0003-add-entryOff-encryption.patch`: Linker modifications
+- `internal/linker/patches/go1.25/0002-add-entryOff-encryption.patch`: Linker modifications
 
 ---
 
@@ -390,14 +390,14 @@ Garble employs multiple obfuscation strategies selected randomly per literal for
 
 #### ASCON-128 Properties
 
-| Property | Value | Benefit |
-|----------|-------|---------|
-| **Security Level** | 128-bit | NIST-approved security strength |
-| **Key Size** | 128-bit (16 bytes) | Strong key space |
-| **Nonce Size** | 128-bit (16 bytes) | Unique per literal |
-| **Tag Size** | 128-bit (16 bytes) | Detects tampering |
-| **Authentication** | Yes (AEAD) | Integrity + confidentiality |
-| **Performance** | Lightweight | Optimized for constrained environments |
+| Property           | Value              | Benefit                                |
+|--------------------|--------------------|----------------------------------------|
+| **Security Level** | 128-bit            | NIST-approved security strength        |
+| **Key Size**       | 128-bit (16 bytes) | Strong key space                       |
+| **Nonce Size**     | 128-bit (16 bytes) | Unique per literal                     |
+| **Tag Size**       | 128-bit (16 bytes) | Detects tampering                      |
+| **Authentication** | Yes (AEAD)         | Integrity + confidentiality            |
+| **Performance**    | Lightweight        | Optimized for constrained environments |
 
 ### Simple Reversible Architecture
 
@@ -545,12 +545,12 @@ go build -ldflags="-X main.apiKey=sk_live_51234567890abcdefABCDEF"
 
 **Security Guarantees**:
 
-| Attack Vector | Normal Build | Garble Build |
-|---------------|--------------|--------------|
-| `strings binary \| grep apiKey` | ❌ Plaintext found | ✅ Not found |
-| Static analysis | ❌ Immediate extraction | ⚠️ Requires decrypt reverse |
-| Hex editor search | ❌ Visible bytes | ✅ Only ciphertext |
-| Memory dump (runtime) | ⚠️ Always plaintext | ⚠️ Decrypted in memory |
+| Attack Vector                   | Normal Build           | Garble Build                |
+|---------------------------------|------------------------|-----------------------------|
+| `strings binary \| grep apiKey` | ❌ Plaintext found      | ✅ Not found                 |
+| Static analysis                 | ❌ Immediate extraction | ⚠️ Requires decrypt reverse |
+| Hex editor search               | ❌ Visible bytes        | ✅ Only ciphertext           |
+| Memory dump (runtime)           | ⚠️ Always plaintext    | ⚠️ Decrypted in memory      |
 
 **Real-World Example**:
 
@@ -581,14 +581,14 @@ Using API key: sk_live_ABC123  ← Decrypted at runtime ✅
 
 ### Current Status
 
-| Feature | Status | Notes |
-|---------|--------|-------|
-| String literals | ✅ Obfuscated | ASCON + simple mix |
-| Numeric literals | ✅ Obfuscated | When `-literals` enabled |
-| Byte slices | ✅ Obfuscated | Treated as literals |
-| Const expressions | ⚠️ Partially covered | Safe string consts are rewritten; compile-time contexts remain const |
-| -ldflags -X strings | ✅ Covered | Sanitised at flag parse; runtime decrypt |
-| Irreversible simple | ⚠️ Planned | Currently uses reversible path |
+| Feature             | Status               | Notes                                                                |
+|---------------------|----------------------|----------------------------------------------------------------------|
+| String literals     | ✅ Obfuscated         | ASCON + simple mix                                                   |
+| Numeric literals    | ✅ Obfuscated         | When `-literals` enabled                                             |
+| Byte slices         | ✅ Obfuscated         | Treated as literals                                                  |
+| Const expressions   | ⚠️ Partially covered | Safe string consts are rewritten; compile-time contexts remain const |
+| -ldflags -X strings | ✅ Covered            | Sanitised at flag parse; runtime decrypt                             |
+| Irreversible simple | ⚠️ Planned           | Currently uses reversible path                                       |
 
 ### Implementation References
 - `internal/literals/ascon.go`: Core ASCON-128 implementation
@@ -682,14 +682,14 @@ func reflectMainPostPatch(file []byte, lpkg *listedPackage, pkg pkgCache) []byte
 
 ### Security Impact Comparison
 
-| Aspect | Default Mode | `-reversible` Mode |
-|--------|--------------|-------------------|
-| `_originalNamePairs` | Empty array | Populated with mappings |
-| Original names in binary | ✅ Not present | ❌ Embedded in plaintext |
-| Reflection functionality | ✅ Works (obfuscated names) | ✅ Works (obfuscated names) |
-| `garble reverse` | ❌ Not supported | ✅ Supported |
-| Reverse engineering oracle | ✅ Eliminated | ❌ Present (by design) |
-| Security level | 🔒 High | 🔓 Medium (trade-off) |
+| Aspect                     | Default Mode               | `-reversible` Mode         |
+|----------------------------|----------------------------|----------------------------|
+| `_originalNamePairs`       | Empty array                | Populated with mappings    |
+| Original names in binary   | ✅ Not present              | ❌ Embedded in plaintext    |
+| Reflection functionality   | ✅ Works (obfuscated names) | ✅ Works (obfuscated names) |
+| `garble reverse`           | ❌ Not supported            | ✅ Supported                |
+| Reverse engineering oracle | ✅ Eliminated               | ❌ Present (by design)      |
+| Security level             | 🔒 High                    | 🔓 Medium (trade-off)      |
 
 ### Usage Recommendations
 
@@ -756,7 +756,7 @@ Encrypt Garble's persistent build cache to prevent offline analysis of obfuscati
 │     data := readFile($GARBLE_CACHE/<action-id>)                 │
 │                                                                 │
 │  2. Check if encrypted (has seed)                               │
-│     if seed := cacheEncryptionSeed(); seed != nil {             │
+│     if seed, _ := cacheEncryptionSeed(); len(seed) > 0 {        │
 │         // Decrypt path                                         │
 │     } else {                                                    │
 │         // Legacy plaintext gob fallback                        │
@@ -809,27 +809,25 @@ func deriveCacheKey(seed []byte) []byte {
 
 ### Activation Conditions
 
-Cache encryption is **enabled by default** when:
-1. A seed is available (`-seed` flag or inherited)
-2. `-no-cache-encrypt` flag is **NOT** present
+Cache encryption is **enabled by default** when `-no-cache-encrypt` is **not** present. Garble uses the CLI seed if supplied; otherwise it derives a per-build key from the build nonce so entries remain encrypted but cannot be reused across builds without the same nonce.
 
 ```sh
-# Encrypted cache (default with seed)
+# Encrypted cache with explicit seed (reusable entries)
 garble -seed=<base64> build
 
 # Explicitly disable encryption
 garble -seed=<base64> -no-cache-encrypt build
 
-# No encryption (no seed)
-garble build  # Cache remains plaintext
+# Seedless build still encrypted (per-build key from GARBLE_BUILD_NONCE or the generated nonce)
+garble build
 ```
 
 ### Shared Cache vs Persistent Cache
 
-| Cache Type | Location | Encrypted | Lifetime |
-|------------|----------|-----------|----------|
+| Cache Type     | Location                    | Encrypted            | Lifetime                |
+|----------------|-----------------------------|----------------------|-------------------------|
 | **Persistent** | `$GARBLE_CACHE/<action-id>` | ✅ Yes (when enabled) | Permanent until trimmed |
-| **Shared** | `$GARBLE_SHARED` (temp) | ❌ No | Deleted after build |
+| **Shared**     | `$GARBLE_SHARED` (temp)     | ❌ No                 | Deleted after build     |
 
 **Design Rationale**:
 - **Persistent cache**: Long-lived, disk-resident → encrypted to protect offline analysis
@@ -847,9 +845,9 @@ ASCON-128's authentication tag provides cryptographic verification:
 Legacy plaintext caches are automatically detected and read:
 ```go
 func decodePkgCacheBytes(data []byte) (pkgCache, error) {
-    if seed := cacheEncryptionSeed(); len(seed) > 0 {
+    if seed, _ := cacheEncryptionSeed(); len(seed) > 0 {
         // Try ASCON decryption
-        return decryptCacheIntoShared(data, seed)
+    return cache.Decrypt(data, seed, &shared)
     }
     // Fallback: plaintext gob
     var cache pkgCache
@@ -860,25 +858,25 @@ func decodePkgCacheBytes(data []byte) (pkgCache, error) {
 
 ### Security Properties
 
-| Property | Value | Benefit |
-|----------|-------|---------|
-| **Algorithm** | ASCON-128 AEAD | NIST-approved authenticated encryption |
-| **Key Size** | 128-bit | Strong security margin |
-| **Nonce** | 128-bit random | Unique per cache entry |
-| **Authentication** | 128-bit tag | Detects tampering |
-| **Domain Separation** | "garble-cache-encryption-v1" | Prevents key reuse attacks |
+| Property              | Value                        | Benefit                                |
+|-----------------------|------------------------------|----------------------------------------|
+| **Algorithm**         | ASCON-128 AEAD               | NIST-approved authenticated encryption |
+| **Key Size**          | 128-bit                      | Strong security margin                 |
+| **Nonce**             | 128-bit random               | Unique per cache entry                 |
+| **Authentication**    | 128-bit tag                  | Detects tampering                      |
+| **Domain Separation** | "garble-cache-encryption-v1" | Prevents key reuse attacks             |
 
 ### Threat Mitigation
 
-| Attack | Mitigation | Result |
-|--------|------------|--------|
-| Offline cache analysis | Encrypted with ASCON-128 | Plaintext metadata inaccessible |
-| Cache tampering | Authentication tag verification | Corruption detected, rebuild triggered |
-| Cache poisoning | Tag forgery requires key | Infeasible (128-bit security) |
-| Key recovery | Seed never stored in cache | Attacker needs build-time seed |
+| Attack                 | Mitigation                      | Result                                 |
+|------------------------|---------------------------------|----------------------------------------|
+| Offline cache analysis | Encrypted with ASCON-128        | Plaintext metadata inaccessible        |
+| Cache tampering        | Authentication tag verification | Corruption detected, rebuild triggered |
+| Cache poisoning        | Tag forgery requires key        | Infeasible (128-bit security)          |
+| Key recovery           | Seed never stored in cache      | Attacker needs build-time seed         |
 
 ### Implementation References
-- `cache_ascon.go`: `deriveCacheKey()`, `encryptCacheWithASCON()`, `decryptCacheIntoShared()`
+- `internal/cache/encryption.go`: `DeriveKey()`, `Encrypt()`, `Decrypt()`
 - `cache_pkg.go`: `computePkgCache()`, `loadPkgCache()`, `decodePkgCacheBytes()`
 - `main.go`: Seed and `-no-cache-encrypt` flag handling
 
@@ -892,12 +890,12 @@ Transform control-flow structures to increase complexity and hinder static analy
 
 ### Modes
 
-| Mode | Behavior | Use Case |
-|------|----------|----------|
-| **off** (default) | No transformation | Standard builds |
-| **directives** | Only functions with `//garble:controlflow` | Selective protection |
-| **auto** | All eligible functions except `//garble:nocontrolflow` | Broad protection with escape hatch |
-| **all** | Every function | Maximum obfuscation |
+| Mode              | Behavior                                               | Use Case                           |
+|-------------------|--------------------------------------------------------|------------------------------------|
+| **off** (default) | No transformation                                      | Standard builds                    |
+| **directives**    | Only functions with `//garble:controlflow`             | Selective protection               |
+| **auto**          | All eligible functions except `//garble:nocontrolflow` | Broad protection with escape hatch |
+| **all**           | Every function                                         | Maximum obfuscation                |
 
 ### Architecture
 
@@ -978,13 +976,13 @@ Control-flow obfuscation (implemented in `internal/ctrlflow`):
 
 ### Current Status
 
-| Feature | Status | Notes |
-|---------|--------|-------|
-| Mode selection | ✅ Implemented | off/directives/auto/all |
-| Directive support | ✅ Implemented | `//garble:controlflow`, `//garble:nocontrolflow` |
-| SSA safety checks | ✅ Implemented | Prevents unsafe transforms |
-| Performance optimization | ⚠️ Ongoing | Heuristics for hot-path detection |
-| Default-on | ❌ Planned | Needs perf validation |
+| Feature                  | Status        | Notes                                            |
+|--------------------------|---------------|--------------------------------------------------|
+| Mode selection           | ✅ Implemented | off/directives/auto/all                          |
+| Directive support        | ✅ Implemented | `//garble:controlflow`, `//garble:nocontrolflow` |
+| SSA safety checks        | ✅ Implemented | Prevents unsafe transforms                       |
+| Performance optimization | ⚠️ Ongoing    | Heuristics for hot-path detection                |
+| Default-on               | ❌ Planned     | Needs perf validation                            |
 
 ### Performance Considerations
 
@@ -1008,32 +1006,32 @@ Control-flow obfuscation can impact:
 
 ### Threat Classification
 
-| Attack Vector | Difficulty | Impact | Mitigation Status |
-|---------------|------------|--------|-------------------|
-| Static pclntab analysis | Medium → Hard | High | ✅ Mitigated (Feistel) |
-| Cross-build name correlation | Easy → Hard | Medium | ✅ Mitigated (Nonce) |
-| Static string extraction | Easy → Medium | High | ✅ Mitigated (ASCON + Simple) |
-| Reflection oracle exploitation | Easy → N/A | Critical | ✅ Eliminated (Default) |
-| Cache offline analysis | Easy → Hard | Medium | ✅ Mitigated (ASCON Encryption) |
-| Dynamic runtime tracing | Easy | Variable | ⚠️ By Design (Observable) |
-| Const expression extraction | Easy | Medium | ⚠️ Partial Gap (compile-time contexts) |
-| -ldflags -X plaintext leakage | Easy | Medium | ✅ Mitigated (Sanitized + obfuscated) |
-| Control-flow analysis | Medium | Medium | ⚠️ Optional (CF modes) |
+| Attack Vector                  | Difficulty    | Impact   | Mitigation Status                      |
+|--------------------------------|---------------|----------|----------------------------------------|
+| Static pclntab analysis        | Medium → Hard | High     | ✅ Mitigated (Feistel)                  |
+| Cross-build name correlation   | Easy → Hard   | Medium   | ✅ Mitigated (Nonce)                    |
+| Static string extraction       | Easy → Medium | High     | ✅ Mitigated (ASCON + Simple)           |
+| Reflection oracle exploitation | Easy → N/A    | Critical | ✅ Eliminated (Default)                 |
+| Cache offline analysis         | Easy → Hard   | Medium   | ✅ Mitigated (ASCON Encryption)         |
+| Dynamic runtime tracing        | Easy          | Variable | ⚠️ By Design (Observable)              |
+| Const expression extraction    | Easy          | Medium   | ⚠️ Partial Gap (compile-time contexts) |
+| -ldflags -X plaintext leakage  | Easy          | Medium   | ✅ Mitigated (Sanitized + obfuscated)   |
+| Control-flow analysis          | Medium        | Medium   | ⚠️ Optional (CF modes)                 |
 
 ### Detailed Mitigation Matrix
 
-| Attack Vector | Mitigation Mechanism | Residual Risk | Notes |
-|---------------|---------------------|---------------|-------|
-| **Static Symbol Table Analysis** | Feistel-encrypted entry offsets with per-build keys and per-function tweak | Dynamic tracing observes actual runtime behavior | Format-preserving; 128-bit keyspace |
-| **Cross-Build Pattern Matching** | SHA-256 seed+nonce mixing; cryptographically random nonce per build | If seed and nonce are fixed (reproducibility), correlation possible | Intentional for deterministic builds |
-| **String/Literal Scraping** | ASCON-128 inline encryption (~60%); multi-layer simple obfuscator (~40%) | Compile-time-only consts remain in plaintext | Remaining gap limited to array lengths / case labels |
-| **Injected -ldflags Strings** | CLI sanitization + shared-cache rehydration via literal builder | Plaintext exists only transiently in garble parent process | Sanitized flags never reach toolchain or final binary |
-| **Reflection Name Oracle** | `_originalNamePairs` array empty by default | Opting into `-reversible` re-introduces oracle by design | Security vs. debugging trade-off |
-| **Cache Inspection/Tampering** | ASCON-128 encryption at rest with 128-bit authentication tag | Shared ephemeral cache plaintext (deleted after build) | Tag verification prevents poisoning |
-| **Known-Plaintext Attack on Literals** | Per-literal random keys/nonces; ASCON authentication | Requires recovering per-literal key (infeasible) | Each literal independently secured |
-| **Brute-Force Key Recovery** | 128-bit Feistel keyspace; 128-bit ASCON keys | Computationally infeasible | Meets NIST security standards |
-| **Dynamic Code Injection** | Not addressed | Requires runtime protections (out of scope) | Obfuscation != runtime security |
-| **Control-Flow Reconstruction** | Optional CF obfuscation modes | If disabled (default), structure remains clear | User must enable explicitly |
+| Attack Vector                          | Mitigation Mechanism                                                       | Residual Risk                                                       | Notes                                                 |
+|----------------------------------------|----------------------------------------------------------------------------|---------------------------------------------------------------------|-------------------------------------------------------|
+| **Static Symbol Table Analysis**       | Feistel-encrypted entry offsets with per-build keys and per-function tweak | Dynamic tracing observes actual runtime behavior                    | Format-preserving; 128-bit keyspace                   |
+| **Cross-Build Pattern Matching**       | SHA-256 seed+nonce mixing; cryptographically random nonce per build        | If seed and nonce are fixed (reproducibility), correlation possible | Intentional for deterministic builds                  |
+| **String/Literal Scraping**            | ASCON-128 inline encryption (~60%); multi-layer simple obfuscator (~40%)   | Compile-time-only consts remain in plaintext                        | Remaining gap limited to array lengths / case labels  |
+| **Injected -ldflags Strings**          | CLI sanitization + shared-cache rehydration via literal builder            | Plaintext exists only transiently in garble parent process          | Sanitized flags never reach toolchain or final binary |
+| **Reflection Name Oracle**             | `_originalNamePairs` array empty by default                                | Opting into `-reversible` re-introduces oracle by design            | Security vs. debugging trade-off                      |
+| **Cache Inspection/Tampering**         | ASCON-128 encryption at rest with 128-bit authentication tag               | Shared ephemeral cache plaintext (deleted after build)              | Tag verification prevents poisoning                   |
+| **Known-Plaintext Attack on Literals** | Per-literal random keys/nonces; ASCON authentication                       | Requires recovering per-literal key (infeasible)                    | Each literal independently secured                    |
+| **Brute-Force Key Recovery**           | 128-bit Feistel keyspace; 128-bit ASCON keys                               | Computationally infeasible                                          | Meets NIST security standards                         |
+| **Dynamic Code Injection**             | Not addressed                                                              | Requires runtime protections (out of scope)                         | Obfuscation != runtime security                       |
+| **Control-Flow Reconstruction**        | Optional CF obfuscation modes                                              | If disabled (default), structure remains clear                      | User must enable explicitly                           |
 
 ### Attack Scenarios & Defenses
 
@@ -1088,11 +1086,11 @@ Control-flow obfuscation can impact:
 
 **Issue**: Certain literal types are not obfuscated.
 
-| Type | Status | Reason | Priority |
-|------|--------|--------|----------|
-| Compile-time const contexts | ⚠️ Partial | Array lengths, case labels, iota must stay const | Medium |
-| `-ldflags -X` strings | ✅ **Covered** | **Sanitized at CLI, encrypted via init()** | ✅ Complete |
-| Runtime-generated strings | ❌ Not covered | Created dynamically | Low |
+| Type                        | Status        | Reason                                           | Priority   |
+|-----------------------------|---------------|--------------------------------------------------|------------|
+| Compile-time const contexts | ⚠️ Partial    | Array lengths, case labels, iota must stay const | Medium     |
+| `-ldflags -X` strings       | ✅ **Covered** | **Sanitized at CLI, encrypted via init()**       | ✅ Complete |
+| Runtime-generated strings   | ❌ Not covered | Created dynamically                              | Low        |
 
 **Example of remaining gap**:
 ```go
@@ -1166,29 +1164,29 @@ fmt.Errorf("database %s not found", dbName)
 
 #### Short-Term (Q4 2025)
 
-| Item | Status | Priority |
-|------|--------|----------|
-| Improve const expression handling | 🔄 In Progress | Medium |
-| Implement irreversible simple obfuscator | 📋 Planned | High |
-| Document -ldflags workarounds | 📋 Planned | Low |
-| Performance benchmarks for CF modes | 📋 Planned | Medium |
+| Item                                     | Status         | Priority |
+|------------------------------------------|----------------|----------|
+| Improve const expression handling        | 🔄 In Progress | Medium   |
+| Implement irreversible simple obfuscator | 📋 Planned     | High     |
+| Document -ldflags workarounds            | 📋 Planned     | Low      |
+| Performance benchmarks for CF modes      | 📋 Planned     | Medium   |
 
 #### Medium-Term (Q1-Q2 2026)
 
-| Item | Status | Priority |
-|------|--------|----------|
-| Control-flow default-on evaluation | 📋 Planned | Medium |
-| `-strip-errors` flag implementation | 📋 Planned | Low |
-| Link-time -ldflags interception | 🔬 Research | Medium |
-| Cache encryption performance tuning | 📋 Planned | Low |
+| Item                                | Status      | Priority |
+|-------------------------------------|-------------|----------|
+| Control-flow default-on evaluation  | 📋 Planned  | Medium   |
+| `-strip-errors` flag implementation | 📋 Planned  | Low      |
+| Link-time -ldflags interception     | 🔬 Research | Medium   |
+| Cache encryption performance tuning | 📋 Planned  | Low      |
 
 #### Long-Term (2026+)
 
-| Item | Status | Priority |
-|------|--------|----------|
-| Anti-debugging countermeasures | 💡 Concept | Low |
-| Whole-program obfuscation mode | 💡 Concept | Low |
-| Hardware-backed key storage | 💡 Concept | Very Low |
+| Item                           | Status     | Priority |
+|--------------------------------|------------|----------|
+| Anti-debugging countermeasures | 💡 Concept | Low      |
+| Whole-program obfuscation mode | 💡 Concept | Low      |
+| Hardware-backed key storage    | 💡 Concept | Very Low |
 
 **Legend**: 💡 Concept | 🔬 Research | 📋 Planned | 🔄 In Progress | ✅ Complete
 
@@ -1215,12 +1213,13 @@ fmt.Errorf("database %s not found", dbName)
 
 ### Documentation
 
-| Document | Purpose | Location |
-|----------|---------|----------|
+| Document               | Purpose                                 | Location                  |
+|------------------------|-----------------------------------------|---------------------------|
 | **FEATURE_TOGGLES.md** | Complete flag and environment reference | `docs/FEATURE_TOGGLES.md` |
-| **CONTROLFLOW.md** | Control-flow obfuscation design | `docs/CONTROLFLOW.md` |
-| **README.md** | User-facing overview and quick start | `README.md` |
-| **This document** | Security architecture and threat model | `docs/SECURITY.md` |
+| **CONTROLFLOW.md**     | Control-flow obfuscation design         | `docs/CONTROLFLOW.md`     |
+| **LITERAL_ENCRYPTION.md** | Literal encryption architecture and HKDF design | `docs/LITERAL_ENCRYPTION.md` |
+| **README.md**          | User-facing overview and quick start    | `README.md`               |
+| **This document**      | Security architecture and threat model  | `docs/SECURITY.md`        |
 
 ### Implementation Files
 
@@ -1233,7 +1232,7 @@ fmt.Errorf("database %s not found", dbName)
 - `feistel.go`: Feistel encryption/decryption primitives
 - `runtime_patch.go`: Runtime injection logic
 - `internal/linker/linker.go`: Linker patching coordination
-- `internal/linker/patches/go1.25/0003-add-entryOff-encryption.patch`: Linker modifications
+- `internal/linker/patches/go1.25/0002-add-entryOff-encryption.patch`: Linker modifications
 
 #### Literals
 - `internal/literals/ascon.go`: ASCON-128 core implementation
@@ -1286,3 +1285,5 @@ fmt.Errorf("database %s not found", dbName)
 - **Last Updated**: October 8, 2025
 - **Next Review**: December 2025
 - **Owner**: x430n Spectre Team
+
+

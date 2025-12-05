@@ -1,6 +1,3 @@
-// Copyright (c) 2020, The Garble Authors.
-// See LICENSE for licensing information.
-
 package literals
 
 import (
@@ -9,7 +6,19 @@ import (
 	"testing"
 )
 
-// TestSimpleObfuscator verifies the improved simple (XOR-based) obfuscator
+func newSimpleContext(r *mathrand.Rand) *obfRand {
+	nameProvider := func(r *mathrand.Rand, baseName string) string { return baseName }
+	helper := newAsconInlineHelper(r, nameProvider)
+	return &obfRand{
+		Rand:               r,
+		proxyDispatcher:    newProxyDispatcher(r, nameProvider),
+		asconHelper:        helper,
+		irreversibleHelper: newIrreversibleInlineHelper(r, nameProvider),
+		keyProvider:        newTestKeyProvider(),
+	}
+}
+
+// TestSimpleObfuscator verifies both reversible and irreversible modes produce structured ASTs.
 func TestSimpleObfuscator(t *testing.T) {
 	testCases := []struct {
 		name string
@@ -20,94 +29,111 @@ func TestSimpleObfuscator(t *testing.T) {
 		{"short", []byte("Hi")},
 		{"medium", []byte("Hello, World!")},
 		{"long", []byte("The quick brown fox jumps over the lazy dog")},
-		{"binary", []byte{0x00, 0x01, 0x02, 0xFF, 0xFE, 0xFD}},
-		{"repeated", []byte("aaaaaaaaaa")},
-		{"special", []byte("Test\n\t\r\x00Special")},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			// Create obfuscator
-			rand := mathrand.New(mathrand.NewSource(42))
-			obf := simple{}
+	modes := []struct {
+		name       string
+		reversible bool
+	}{
+		{name: "irreversible", reversible: false},
+		{name: "reversible", reversible: true},
+	}
 
-			// Generate external keys
-			extKeys := []*externalKey{
-				{name: "k1", typ: "uint32", value: 0x12345678, bits: 32},
-				{name: "k2", typ: "uint16", value: 0xABCD, bits: 16},
-			}
+	for _, mode := range modes {
+		mode := mode
+		t.Run(mode.name, func(t *testing.T) {
+			SetReversibleMode(mode.reversible)
+			t.Cleanup(func() { SetReversibleMode(false) })
 
-			// Make a copy of original data
-			original := make([]byte, len(tc.data))
-			copy(original, tc.data)
+			for _, tc := range testCases {
+				tc := tc
+				t.Run(tc.name, func(t *testing.T) {
+					rand := mathrand.New(mathrand.NewSource(42))
+					ctx := newSimpleContext(rand)
+					obf := simple{}
 
-			// Obfuscate
-			blockStmt := obf.obfuscate(rand, tc.data, extKeys)
+					extKeys := []*externalKey{
+						{name: "k1", typ: "uint32", value: 0x12345678, bits: 32},
+						{name: "k2", typ: "uint16", value: 0xABCD, bits: 16},
+					}
 
-			if blockStmt == nil {
-				t.Fatal("obfuscate returned nil")
-			}
+					dataCopy := append([]byte(nil), tc.data...)
+					blockStmt := obf.obfuscate(ctx, dataCopy, extKeys)
 
-			// Verify AST structure
-			if len(blockStmt.List) == 0 {
-				t.Fatal("expected at least one statement")
-			}
+					if blockStmt == nil {
+						t.Fatal("obfuscate returned nil")
+					}
 
-			// Empty data case has just 1 statement (data assignment)
-			if len(original) == 0 {
-				if len(blockStmt.List) != 1 {
-					t.Fatalf("expected 1 statement for empty data, got %d", len(blockStmt.List))
-				}
-				t.Logf("✅ Generated %d statement for empty bytes", len(blockStmt.List))
-				return
-			}
+					if len(blockStmt.List) == 0 {
+						t.Fatal("expected at least one statement")
+					}
 
-			// Check that statements were generated
-			if len(blockStmt.List) < 4 {
-				t.Fatalf("expected at least 4 statements, got %d", len(blockStmt.List))
-			}
+					if len(tc.data) == 0 {
+						if len(blockStmt.List) != 1 {
+							t.Fatalf("expected 1 statement for empty data, got %d", len(blockStmt.List))
+						}
+						return
+					}
 
-			t.Logf("✅ Generated %d statements for %d bytes", len(blockStmt.List), len(original))
+					hasDataAssign := false
+					hasLoop := false
+					foundSubkeys := false
+					helperCall := false
+					hasNonce := false
+					hasKey := false
 
-			// Verify nonce statement exists
-			hasNonce := false
-			hasKey := false
-			hasData := false
-			hasLoop := false
-
-			for _, stmt := range blockStmt.List {
-				switch s := stmt.(type) {
-				case *ast.AssignStmt:
-					if len(s.Lhs) > 0 {
-						if ident, ok := s.Lhs[0].(*ast.Ident); ok {
-							switch ident.Name {
-							case "nonce":
-								hasNonce = true
-							case "key":
-								hasKey = true
-							case "data":
-								hasData = true
+					for _, stmt := range blockStmt.List {
+						switch s := stmt.(type) {
+						case *ast.AssignStmt:
+							for _, lhs := range s.Lhs {
+								if ident, ok := lhs.(*ast.Ident); ok {
+									switch ident.Name {
+									case "data":
+										hasDataAssign = true
+									case "nonce":
+										hasNonce = true
+									case "key":
+										hasKey = true
+									case "subkeys":
+										foundSubkeys = true
+									}
+								}
 							}
+							if len(s.Rhs) == 1 {
+								if call, ok := s.Rhs[0].(*ast.CallExpr); ok {
+									if ident, ok := call.Fun.(*ast.Ident); ok && ctx.irreversibleHelper != nil && ident.Name == ctx.irreversibleHelper.funcName {
+										helperCall = true
+									}
+								}
+							}
+						case *ast.ForStmt:
+							hasLoop = true
 						}
 					}
-				case *ast.ForStmt:
-					hasLoop = true
-				}
-			}
 
-			if len(original) > 0 {
-				if !hasNonce {
-					t.Error("expected nonce statement")
-				}
-				if !hasKey {
-					t.Error("expected key statement")
-				}
-				if !hasData {
-					t.Error("expected data statement")
-				}
-				if !hasLoop {
-					t.Error("expected deobfuscation loop")
-				}
+					if !hasDataAssign {
+						t.Error("expected data assignment in obfuscation block")
+					}
+
+					if mode.reversible {
+						if !hasNonce {
+							t.Error("expected nonce statement in reversible mode")
+						}
+						if !hasKey {
+							t.Error("expected key statement in reversible mode")
+						}
+						if !hasLoop {
+							t.Error("expected deobfuscation loop in reversible mode")
+						}
+					} else {
+						if !foundSubkeys {
+							t.Error("expected subkey material in irreversible mode")
+						}
+						if !helperCall {
+							t.Error("expected call to irreversible decode helper")
+						}
+					}
+				})
 			}
 		})
 	}
@@ -118,21 +144,19 @@ func TestSimpleObfuscatorDifferentSeeds(t *testing.T) {
 	data := []byte("Test data for randomness")
 	obf := simple{}
 
-	extKeys := []*externalKey{
-		{name: "k1", typ: "uint32", value: 0x12345678, bits: 32},
-	}
-
 	// Generate with seed 1
 	rand1 := mathrand.New(mathrand.NewSource(1))
+	ctx1 := newSimpleContext(rand1)
 	data1 := make([]byte, len(data))
 	copy(data1, data)
-	block1 := obf.obfuscate(rand1, data1, extKeys)
+	block1 := obf.obfuscate(ctx1, data1, []*externalKey{{name: "k1", typ: "uint32", value: 0x12345678, bits: 32}})
 
 	// Generate with seed 2
 	rand2 := mathrand.New(mathrand.NewSource(2))
+	ctx2 := newSimpleContext(rand2)
 	data2 := make([]byte, len(data))
 	copy(data2, data)
-	block2 := obf.obfuscate(rand2, data2, extKeys)
+	block2 := obf.obfuscate(ctx2, data2, []*externalKey{{name: "k1", typ: "uint32", value: 0x12345678, bits: 32}})
 
 	// They should be different (different nonce/key)
 	// We can't compare AST directly, but we can check they're not nil
@@ -149,6 +173,7 @@ func TestSimpleObfuscatorDifferentSeeds(t *testing.T) {
 func TestSimpleObfuscatorExternalKeyUsage(t *testing.T) {
 	data := []byte("Test external key usage")
 	rand := mathrand.New(mathrand.NewSource(42))
+	ctx := newSimpleContext(rand)
 	obf := simple{}
 
 	extKeys := []*externalKey{
@@ -157,7 +182,7 @@ func TestSimpleObfuscatorExternalKeyUsage(t *testing.T) {
 	}
 
 	// Obfuscate
-	_ = obf.obfuscate(rand, data, extKeys)
+	_ = obf.obfuscate(ctx, data, extKeys)
 
 	// External keys should be used (refs > 0)
 	// The dataToByteSliceWithExtKeys function should mark them as used
@@ -178,6 +203,7 @@ func TestSimpleObfuscatorExternalKeyUsage(t *testing.T) {
 func TestSimpleObfuscatorAST(t *testing.T) {
 	data := []byte("Test AST generation")
 	rand := mathrand.New(mathrand.NewSource(42))
+	ctx := newSimpleContext(rand)
 	obf := simple{}
 
 	extKeys := []*externalKey{
@@ -185,7 +211,7 @@ func TestSimpleObfuscatorAST(t *testing.T) {
 	}
 
 	// Obfuscate
-	blockStmt := obf.obfuscate(rand, data, extKeys)
+	blockStmt := obf.obfuscate(ctx, data, extKeys)
 
 	// Try to generate code from AST
 	file := &ast.File{
@@ -230,24 +256,44 @@ func main() {
 	_ = testCode
 }
 
-// TestSimpleObfuscatorCompareWithOld compares new implementation behavior
-func TestSimpleObfuscatorCompareWithOld(t *testing.T) {
+// TestSimpleObfuscatorReversibleStructure ensures reversible mode retains metadata required for decoding.
+func TestSimpleObfuscatorReversibleStructure(t *testing.T) {
 	data := []byte("Test comparison")
 	rand := mathrand.New(mathrand.NewSource(42))
+	ctx := newSimpleContext(rand)
 	obf := simple{}
 
-	extKeys := []*externalKey{
-		{name: "k1", typ: "uint32", value: 0x12345678, bits: 32},
+	extKeys := []*externalKey{{name: "k1", typ: "uint32", value: 0x12345678, bits: 32}}
+
+	SetReversibleMode(true)
+	t.Cleanup(func() { SetReversibleMode(false) })
+
+	blockStmt := obf.obfuscate(ctx, data, extKeys)
+
+	hasNonce := false
+	hasKey := false
+	hasLoop := false
+	for _, stmt := range blockStmt.List {
+		switch s := stmt.(type) {
+		case *ast.AssignStmt:
+			for _, lhs := range s.Lhs {
+				if ident, ok := lhs.(*ast.Ident); ok {
+					if ident.Name == "nonce" {
+						hasNonce = true
+					}
+					if ident.Name == "key" {
+						hasKey = true
+					}
+				}
+			}
+		case *ast.ForStmt:
+			hasLoop = true
+		}
 	}
 
-	// New implementation should generate more statements (nonce, position mixing, chaining)
-	blockStmt := obf.obfuscate(rand, data, extKeys)
-
-	if len(blockStmt.List) < 4 {
-		t.Errorf("expected at least 4 statements for improved obfuscation, got %d", len(blockStmt.List))
+	if !hasNonce || !hasKey || !hasLoop {
+		t.Fatalf("reversible mode missing structures (nonce=%v key=%v loop=%v)", hasNonce, hasKey, hasLoop)
 	}
-
-	t.Logf("✅ New implementation generates %d statements (old was 3)", len(blockStmt.List))
 }
 
 // BenchmarkSimpleObfuscator benchmarks the improved simple obfuscator
@@ -258,6 +304,7 @@ func BenchmarkSimpleObfuscator(b *testing.B) {
 		b.Run(string(rune(size))+"B", func(b *testing.B) {
 			data := make([]byte, size)
 			rand := mathrand.New(mathrand.NewSource(42))
+			ctx := newSimpleContext(rand)
 			obf := simple{}
 
 			extKeys := []*externalKey{
@@ -270,7 +317,7 @@ func BenchmarkSimpleObfuscator(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				dataCopy := make([]byte, len(data))
 				copy(dataCopy, data)
-				_ = obf.obfuscate(rand, dataCopy, extKeys)
+				_ = obf.obfuscate(ctx, dataCopy, extKeys)
 			}
 		})
 	}

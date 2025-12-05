@@ -1,12 +1,8 @@
-// Copyright (c) 2020, The Garble Authors.
-// See LICENSE for licensing information.
-
 package literals
 
 import (
 	"go/ast"
 	"go/token"
-	mathrand "math/rand"
 
 	ah "github.com/AeonDave/garble/internal/asthelper"
 )
@@ -16,7 +12,8 @@ type shuffle struct{}
 // check that the obfuscator interface is implemented
 var _ obfuscator = shuffle{}
 
-func (shuffle) obfuscate(rand *mathrand.Rand, data []byte, extKeys []*externalKey) *ast.BlockStmt {
+func (shuffle) obfuscate(ctx *obfRand, data []byte, extKeys []*externalKey) *ast.BlockStmt {
+	rand := ctx.Rand
 	key := make([]byte, len(data))
 	rand.Read(key)
 

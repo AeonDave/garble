@@ -1,6 +1,3 @@
-// Copyright (c) 2019, The Garble Authors.
-// See LICENSE for licensing information.
-
 package literals
 
 import (
@@ -9,6 +6,20 @@ import (
 	"testing"
 )
 
+func newBenchmarkContext(r *mathrand.Rand) *obfRand {
+	nameProvider := func(r *mathrand.Rand, baseName string) string {
+		return baseName
+	}
+	helper := newAsconInlineHelper(r, nameProvider)
+	return &obfRand{
+		Rand:               r,
+		proxyDispatcher:    newProxyDispatcher(r, nameProvider),
+		asconHelper:        helper,
+		irreversibleHelper: newIrreversibleInlineHelper(r, nameProvider),
+		keyProvider:        newTestKeyProvider(),
+	}
+}
+
 // BenchmarkObfuscatorPerformance compares all obfuscators with various sizes
 func BenchmarkObfuscatorPerformance(b *testing.B) {
 	sizes := []int{16, 64, 128, 256, 512, 1024, 2048}
@@ -16,12 +27,8 @@ func BenchmarkObfuscatorPerformance(b *testing.B) {
 	for _, size := range sizes {
 		b.Run(fmt.Sprintf("ASCON_%dB", size), func(b *testing.B) {
 			rand := mathrand.New(mathrand.NewSource(42))
-			nameProvider := func(r *mathrand.Rand, baseName string) string {
-				return baseName
-			}
-
-			helper := newAsconInlineHelper(rand, nameProvider)
-			obf := newAsconObfuscator(helper)
+			ctx := newBenchmarkContext(rand)
+			obf := newAsconObfuscator(ctx.asconHelper, newTestKeyProvider())
 
 			testData := make([]byte, size)
 			for i := range testData {
@@ -35,12 +42,13 @@ func BenchmarkObfuscatorPerformance(b *testing.B) {
 			b.ResetTimer()
 			b.SetBytes(int64(size))
 			for i := 0; i < b.N; i++ {
-				_ = obf.obfuscate(rand, testData, extKeys)
+				_ = obf.obfuscate(ctx, testData, extKeys)
 			}
 		})
 
 		b.Run(fmt.Sprintf("Simple_%dB", size), func(b *testing.B) {
 			rand := mathrand.New(mathrand.NewSource(42))
+			ctx := newBenchmarkContext(rand)
 			obf := simple{}
 
 			testData := make([]byte, size)
@@ -55,12 +63,13 @@ func BenchmarkObfuscatorPerformance(b *testing.B) {
 			b.ResetTimer()
 			b.SetBytes(int64(size))
 			for i := 0; i < b.N; i++ {
-				_ = obf.obfuscate(rand, testData, extKeys)
+				_ = obf.obfuscate(ctx, testData, extKeys)
 			}
 		})
 
 		b.Run(fmt.Sprintf("Swap_%dB", size), func(b *testing.B) {
 			rand := mathrand.New(mathrand.NewSource(42))
+			ctx := newBenchmarkContext(rand)
 			obf := &swap{}
 
 			testData := make([]byte, size)
@@ -75,12 +84,13 @@ func BenchmarkObfuscatorPerformance(b *testing.B) {
 			b.ResetTimer()
 			b.SetBytes(int64(size))
 			for i := 0; i < b.N; i++ {
-				_ = obf.obfuscate(rand, testData, extKeys)
+				_ = obf.obfuscate(ctx, testData, extKeys)
 			}
 		})
 
 		b.Run(fmt.Sprintf("Split_%dB", size), func(b *testing.B) {
 			rand := mathrand.New(mathrand.NewSource(42))
+			ctx := newBenchmarkContext(rand)
 			obf := &split{}
 
 			testData := make([]byte, size)
@@ -95,7 +105,7 @@ func BenchmarkObfuscatorPerformance(b *testing.B) {
 			b.ResetTimer()
 			b.SetBytes(int64(size))
 			for i := 0; i < b.N; i++ {
-				_ = obf.obfuscate(rand, testData, extKeys)
+				_ = obf.obfuscate(ctx, testData, extKeys)
 			}
 		})
 	}

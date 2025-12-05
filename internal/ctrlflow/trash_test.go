@@ -4,11 +4,9 @@ import (
 	"fmt"
 	"go/ast"
 	"go/importer"
-	"go/printer"
 	"go/token"
 	"go/types"
 	mathrand "math/rand"
-	"os"
 	"strconv"
 	"testing"
 
@@ -66,7 +64,7 @@ func Test_generateTrashBlock(t *testing.T) {
 	beforeSsaPkg := buildPkg(file)
 
 	imports := make(map[string]string)
-	gen := newTrashGenerator(beforeSsaPkg.Prog, func(pkg *types.Package) *ast.Ident {
+	gen := newTrashGenerator(beforeSsaPkg.Prog, beforeSsaPkg.Pkg.Path(), func(pkg *types.Package) *ast.Ident {
 		if pkg == nil || pkg.Path() == beforeSsaPkg.Pkg.Path() {
 			return nil
 		}
@@ -97,6 +95,5 @@ func Test_generateTrashBlock(t *testing.T) {
 	}
 
 	body.List = append(body.List, gen.Generate(stmtCount, predefinedArgs)...)
-	printer.Fprint(os.Stdout, fset, file)
 	buildPkg(file)
 }

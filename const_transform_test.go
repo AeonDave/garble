@@ -7,6 +7,7 @@ import (
 	"go/types"
 	"testing"
 
+	consts "github.com/AeonDave/garble/internal/consts"
 	"github.com/go-quicktest/qt"
 )
 
@@ -62,7 +63,7 @@ var _ = needsConst(sink)
 `
 
 	file, pkg, info := parseConstFixture(t, src)
-	transforms := computeConstTransforms([]*ast.File{file}, info, pkg)
+	transforms := consts.ComputeTransforms([]*ast.File{file}, info, pkg)
 
 	qt.Assert(t, qt.HasLen(transforms, 1))
 
@@ -110,7 +111,7 @@ var _ = wantsConst(sink)
 `
 
 	file, pkg, info := parseConstFixture(t, src)
-	transforms := computeConstTransforms([]*ast.File{file}, info, pkg)
+	transforms := consts.ComputeTransforms([]*ast.File{file}, info, pkg)
 
 	runtimeObj := pkg.Scope().Lookup("runtimeSecret").(*types.Const)
 	caseObj := pkg.Scope().Lookup("caseLabel").(*types.Const)
@@ -124,13 +125,7 @@ var _ = wantsConst(sink)
 	qt.Assert(t, qt.IsNil(transforms[caseObj]))
 	qt.Assert(t, qt.IsNil(transforms[arrayObj]))
 
-	tf := transformer{
-		info:            info,
-		pkg:             pkg,
-		constTransforms: transforms,
-	}
-
-	tf.rewriteConstDecls(file)
+	consts.RewriteDecls(file, info, transforms)
 
 	constNames := make(map[string]bool)
 	varDocs := make(map[string]*ast.CommentGroup)
@@ -193,10 +188,10 @@ var _ = wantsConst(sink)
 	})
 	qt.Assert(t, qt.Equals(useObj, info.Defs[runtimeIdent]))
 
-	transform := tf.constTransforms[runtimeObj]
+	transform := transforms[runtimeObj]
 	qt.Assert(t, qt.IsNotNil(transform))
-	qt.Assert(t, qt.IsNil(transform.uses))
-	qt.Assert(t, qt.Equals(types.Object(transform.varObj), info.Defs[runtimeIdent]))
+	qt.Assert(t, qt.IsNil(transform.Uses))
+	qt.Assert(t, qt.Equals(types.Object(transform.VarObj), info.Defs[runtimeIdent]))
 }
 
 func findDefIdent(t *testing.T, info *types.Info, name string) *ast.Ident {

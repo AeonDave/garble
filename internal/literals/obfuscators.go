@@ -1,6 +1,3 @@
-// Copyright (c) 2020, The Garble Authors.
-// See LICENSE for licensing information.
-
 package literals
 
 import (
@@ -54,48 +51,36 @@ func (k *externalKey) IsUsed() bool {
 	return k.refs > 0
 }
 
-// obfuscator takes a byte slice and converts it to a ast.BlockStmt
+// obfuscator takes a byte slice and converts it to an ast.BlockStmt.
+// Implementations receive the full obfuscation context so they can access
+// deterministic keying material and helpers in addition to pseudorandomness.
 type obfuscator interface {
-	obfuscate(obfRand *mathrand.Rand, data []byte, extKeys []*externalKey) *ast.BlockStmt
+	obfuscate(ctx *obfRand, data []byte, extKeys []*externalKey) *ast.BlockStmt
 }
 
 var (
 	simpleObfuscator = simple{}
 
-	// Obfuscators contains all literal obfuscation strategies.
-	// We maintain multiple obfuscators for defense-in-depth security:
-	//
-	// Primary: ASCON-128 (60% usage) provides 128-bit authenticated encryption
-	//          with NIST Lightweight Cryptography standard compliance
-	//
-	// Legacy: (40% usage combined) provide performance benefits for small literals
-	//         and pattern diversity to resist binary fingerprinting
-	//         - simple: Fast XOR-based obfuscation
-	//         - swap: Byte position shuffling
-	//         - split: Chunk-based obfuscation
-	//         - shuffle: Random byte permutation
-	//         - seed: Seed-based generation
-	//
-	// This mix balances strong cryptography (ASCON) with fast operations (legacy)
-	// for optimal security, performance, and anti-detection capabilities.
-	Obfuscators = []obfuscator{
-		simpleObfuscator,
-		swap{},
-		split{},
-		shuffle{},
-		seed{},
-	}
-
-	// LinearTimeObfuscators contains obfuscators safe for large literals.
-	// ASCON-128 is preferred (70%) for its authenticated encryption.
-	// Simple XOR (30%) provides fallback for performance-critical cases.
-	LinearTimeObfuscators = []obfuscator{
-		simpleObfuscator,
-	}
-
 	TestObfuscator         string
 	testPkgToObfuscatorMap map[string]obfuscator
 )
+
+const (
+	strategyNameSimple  = "simple"
+	strategyNameSwap    = "swap"
+	strategyNameSplit   = "split"
+	strategyNameShuffle = "shuffle"
+	strategyNameSeed    = "seed"
+)
+
+func init() {
+	// General purpose strategies.
+	registerStrategy(strategyNameSimple, simpleObfuscator, withLinearSupport())
+	registerStrategy(strategyNameSwap, swap{})
+	registerStrategy(strategyNameSplit, split{})
+	registerStrategy(strategyNameShuffle, shuffle{})
+	registerStrategy(strategyNameSeed, seed{})
+}
 
 func genRandIntSlice(obfRand *mathrand.Rand, max, count int) []int {
 	indexes := make([]int, count)
@@ -275,8 +260,10 @@ type obfRand struct {
 	*mathrand.Rand
 	testObfuscator obfuscator
 
-	proxyDispatcher *proxyDispatcher
-	asconHelper     *asconInlineHelper
+	proxyDispatcher    *proxyDispatcher
+	asconHelper        *asconInlineHelper
+	irreversibleHelper *irreversibleInlineHelper
+	keyProvider        KeyProvider
 }
 
 func (r *obfRand) nextObfuscator() obfuscator {
@@ -287,10 +274,14 @@ func (r *obfRand) nextObfuscator() obfuscator {
 	// Use ASCON obfuscator with higher probability for better security
 	// 60% ASCON, 40% other obfuscators
 	if r.Float32() < 0.6 {
-		return newAsconObfuscator(r.asconHelper)
+		return newAsconObfuscator(r.asconHelper, r.keyProvider)
 	}
 
-	return Obfuscators[r.Intn(len(Obfuscators))]
+	if obf := pickGeneralStrategy(r.Rand); obf != nil {
+		return obf
+	}
+
+	return simpleObfuscator
 }
 
 func (r *obfRand) nextLinearTimeObfuscator() obfuscator {
@@ -301,14 +292,22 @@ func (r *obfRand) nextLinearTimeObfuscator() obfuscator {
 	// For large literals, prefer ASCON for security
 	// ASCON has linear time complexity and provides authenticated encryption
 	if r.Float32() < 0.7 {
-		return newAsconObfuscator(r.asconHelper)
+		return newAsconObfuscator(r.asconHelper, r.keyProvider)
 	}
 
-	return LinearTimeObfuscators[r.Intn(len(LinearTimeObfuscators))]
+	if obf := pickLinearStrategy(r.Rand); obf != nil {
+		return obf
+	}
+
+	return simpleObfuscator
 }
 
-func newObfRand(rand *mathrand.Rand, file *ast.File, nameFunc NameProviderFunc) *obfRand {
+func newObfRand(rand *mathrand.Rand, file *ast.File, nameFunc NameProviderFunc, keys KeyProvider) *obfRand {
+	if keys == nil {
+		panic("literals: nil key provider for obfuscator")
+	}
 	testObf := testPkgToObfuscatorMap[file.Name.Name]
 	asconHelper := newAsconInlineHelper(rand, nameFunc)
-	return &obfRand{rand, testObf, newProxyDispatcher(rand, nameFunc), asconHelper}
+	irreversibleHelper := newIrreversibleInlineHelper(rand, nameFunc)
+	return &obfRand{rand, testObf, newProxyDispatcher(rand, nameFunc), asconHelper, irreversibleHelper, keys}
 }

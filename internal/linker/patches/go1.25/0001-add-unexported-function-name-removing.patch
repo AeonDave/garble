@@ -1,20 +1,25 @@
-From 2a691e00bc659059133cd5604c7a099981cf684c Mon Sep 17 00:00:00 2001
-From: pagran <pagran@protonmail.com>
-Date: Mon, 9 Jan 2023 13:30:36 +0100
-Subject: [PATCH 2/3] add unexported function name removing
+From 78ee3e20686c13182c5baf272d9433bb553d19bd Mon Sep 17 00:00:00 2001
+From: Dave <nova.davide@gmail.com>
+Date: Sun, 26 Oct 2025 23:19:40 +0100
+Subject: [PATCH] Add support for GARBLE_LINK_TINY to minimize funcnametab for
+ non-exported symbols
 
 ---
- cmd/link/internal/ld/pcln.go | 43 +++++++++++++++++++++++++++++++++++-
- 1 file changed, 42 insertions(+), 1 deletion(-)
+ cmd/link/internal/ld/pcln.go | 47 +++++++++++++++++++++++++++++++++++-
+ 1 file changed, 46 insertions(+), 1 deletion(-)
 
 diff --git a/cmd/link/internal/ld/pcln.go b/cmd/link/internal/ld/pcln.go
-index 7bae9f18c5..b497573b15 100644
+index 9532b33..8390e93 100644
 --- a/cmd/link/internal/ld/pcln.go
 +++ b/cmd/link/internal/ld/pcln.go
-@@ -8,6 +8,10 @@ import (
- 	"os"
- )
+@@ -4,6 +4,14 @@
  
+ package ld
+ 
++import (
++	"os"
++)
++
 +import (
 +	"unicode"
 +)
@@ -22,7 +27,7 @@ index 7bae9f18c5..b497573b15 100644
  import (
  	"cmd/internal/goobj"
  	"cmd/internal/objabi"
-@@ -318,19 +322,56 @@ func walkFuncs(ctxt *Link, funcs []loader.Sym, f func(loader.Sym)) {
+@@ -315,19 +323,56 @@ func walkFuncs(ctxt *Link, funcs []loader.Sym, f func(loader.Sym)) {
  func (state *pclntab) generateFuncnametab(ctxt *Link, funcs []loader.Sym) map[loader.Sym]uint32 {
  	nameOffsets := make(map[loader.Sym]uint32, state.nfunc)
  
@@ -81,5 +86,5 @@ index 7bae9f18c5..b497573b15 100644
  
  	state.funcnametab = state.addGeneratedSym(ctxt, "runtime.funcnametab", size, writeFuncNameTab)
 -- 
-2.48.1
+2.50.1.windows.1
 

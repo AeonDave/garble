@@ -8,7 +8,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"go/token"
@@ -252,24 +251,6 @@ func isLower(b byte) bool { return 'a' <= b && b <= 'z' }
 func isUpper(b byte) bool { return 'A' <= b && b <= 'Z' }
 func toLower(b byte) byte { return b + ('a' - 'A') }
 func toUpper(b byte) byte { return b - ('a' - 'A') }
-
-func runtimeHashWithCustomSalt(salt []byte) uint32 {
-	hasher.Reset()
-	if !flagSeed.present() {
-		hasher.Write(sharedCache.ListedPackages["runtime"].GarbleActionID[:])
-	} else {
-		hasher.Write(seedHashInput())
-	}
-	hasher.Write(salt)
-	sum := hasher.Sum(sumBuffer[:0])
-	return binary.LittleEndian.Uint32(sum)
-}
-
-// magicValue returns random magic value based
-// on user specified seed or the runtime package's GarbleActionID.
-func magicValue() uint32 {
-	return runtimeHashWithCustomSalt([]byte("magic"))
-}
 
 // feistelSeed returns a 32-byte seed for Feistel cipher encryption.
 // Used by both linker (encryption) and runtime (decryption).

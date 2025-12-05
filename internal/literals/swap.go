@@ -1,6 +1,3 @@
-// Copyright (c) 2020, The Garble Authors.
-// See LICENSE for licensing information.
-
 package literals
 
 import (
@@ -58,7 +55,8 @@ func generateSwapCount(obfRand *mathrand.Rand, dataLen int) int {
 	return swapCount
 }
 
-func (swap) obfuscate(rand *mathrand.Rand, data []byte, extKeys []*externalKey) *ast.BlockStmt {
+func (swap) obfuscate(ctx *obfRand, data []byte, extKeys []*externalKey) *ast.BlockStmt {
+	rand := ctx.Rand
 	swapCount := generateSwapCount(rand, len(data))
 	shiftKey := byte(rand.Uint32())
 

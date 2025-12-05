@@ -12,54 +12,6 @@ import (
 	ah "github.com/AeonDave/garble/internal/asthelper"
 )
 
-// updateMagicValue updates hardcoded value of hdr.magic
-// when verifying header in symtab.go
-func updateMagicValue(file *ast.File, magicValue uint32) {
-	magicUpdated := false
-
-	// Find `hdr.magic != 0xfffffff?` in symtab.go and update to random magicValue
-	updateMagic := func(node ast.Node) bool {
-		binExpr, ok := node.(*ast.BinaryExpr)
-		if !ok || binExpr.Op != token.NEQ {
-			return true
-		}
-
-		selectorExpr, ok := binExpr.X.(*ast.SelectorExpr)
-		if !ok {
-			return true
-		}
-
-		if ident, ok := selectorExpr.X.(*ast.Ident); !ok || ident.Name != "hdr" {
-			return true
-		}
-		if selectorExpr.Sel.Name != "magic" {
-			return true
-		}
-
-		if _, ok := binExpr.Y.(*ast.BasicLit); !ok {
-			return true
-		}
-		binExpr.Y = &ast.BasicLit{
-			Kind:  token.INT,
-			Value: strconv.FormatUint(uint64(magicValue), 10),
-		}
-		magicUpdated = true
-		return false
-	}
-
-	for _, decl := range file.Decls {
-		funcDecl, ok := decl.(*ast.FuncDecl)
-		if ok && funcDecl.Name.Name == "moduledataverify1" {
-			ast.Inspect(funcDecl, updateMagic)
-			break
-		}
-	}
-
-	if !magicUpdated {
-		panic("magic value not updated")
-	}
-}
-
 // updateEntryOffsetFeistel injects Feistel decryption into runtime.funcInfo.entry()
 // Uses 4-round Feistel network with helper functions marked //go:nosplit to avoid
 // adding stack frames that would break runtime.Caller() depth tracking.
@@ -506,27 +458,10 @@ func stripRuntime(basename string, file *ast.File) {
 				funcDecl.Body.List = nil
 			}
 		case "runtime1.go":
-			usesEnv := func(node ast.Node) bool {
-				for node := range ast.Preorder(node) {
-					ident, ok := node.(*ast.Ident)
-					if ok && ident.Name == "gogetenv" {
-						return true
-					}
-				}
-				return false
-			}
-		filenames:
 			switch funcDecl.Name.Name {
 			case "parsedebugvars":
-				// keep defaults for GODEBUG cgocheck and invalidptr,
-				// remove code that reads GODEBUG via gogetenv
-				for i, stmt := range funcDecl.Body.List {
-					if usesEnv(stmt) {
-						funcDecl.Body.List = funcDecl.Body.List[:i]
-						break filenames
-					}
-				}
-				panic("did not see any gogetenv call in parsedebugvars")
+				// Ignore GODEBUG entirely to avoid exposing runtime debug channels and keep output deterministic.
+				funcDecl.Body.List = nil
 			case "setTraceback":
 				// tracebacks are completely hidden, no
 				// sense keeping this function

@@ -5,7 +5,11 @@ package main
 
 import (
 	"bytes"
+	"io"
+	"sync"
 	"testing"
+
+	cacheenc "github.com/AeonDave/garble/internal/cache"
 )
 
 func TestCacheEncryption(t *testing.T) {
@@ -30,7 +34,7 @@ func TestCacheEncryption(t *testing.T) {
 	}
 
 	// Encrypt
-	encrypted, err := encryptCacheWithASCON(original, seed)
+	encrypted, err := cacheenc.Encrypt(original, seed)
 	if err != nil {
 		t.Fatalf("encryption failed: %v", err)
 	}
@@ -50,13 +54,13 @@ func TestCacheEncryption(t *testing.T) {
 	}
 
 	// Verify format: [nonce 16 bytes][ciphertext][tag 16 bytes]
-	if len(encrypted) < 32 {
+	if len(encrypted) < cacheenc.NonceSize+cacheenc.TagSize {
 		t.Errorf("encrypted cache too short: %d bytes (expected at least 32)", len(encrypted))
 	}
 
 	// Decrypt
-	decrypted, err := decryptCacheIntoShared(encrypted, seed)
-	if err != nil {
+	var decrypted sharedCacheType
+	if err := cacheenc.Decrypt(encrypted, seed, &decrypted); err != nil {
 		t.Fatalf("decryption failed: %v", err)
 	}
 
@@ -88,7 +92,7 @@ func TestCacheTamperingDetection(t *testing.T) {
 		GOGARBLE: "test-data",
 	}
 
-	encrypted, err := encryptCacheWithASCON(original, seed)
+	encrypted, err := cacheenc.Encrypt(original, seed)
 	if err != nil {
 		t.Fatalf("encryption failed: %v", err)
 	}
@@ -100,7 +104,8 @@ func TestCacheTamperingDetection(t *testing.T) {
 		tampered[20] ^= 0x01 // Flip one bit
 
 		// Should fail authentication
-		_, err = decryptCacheIntoShared(tampered, seed)
+		var out sharedCacheType
+		err = cacheenc.Decrypt(tampered, seed, &out)
 		if err == nil {
 			t.Error("tampering not detected! ASCON authentication failed")
 		} else {
@@ -114,7 +119,8 @@ func TestCacheTamperingDetection(t *testing.T) {
 		copy(tamperedTag, encrypted)
 		tamperedTag[len(tamperedTag)-1] ^= 0xFF // Flip bits in tag
 
-		_, err = decryptCacheIntoShared(tamperedTag, seed)
+		var out sharedCacheType
+		err = cacheenc.Decrypt(tamperedTag, seed, &out)
 		if err == nil {
 			t.Error("tag tampering not detected!")
 		} else {
@@ -127,8 +133,8 @@ func TestCacheKeyDerivation(t *testing.T) {
 	seed1 := []byte("seed-1234567890123456789012345")
 	seed2 := []byte("seed-9999999999999999999999999")
 
-	key1 := deriveCacheKey(seed1)
-	key2 := deriveCacheKey(seed2)
+	key1 := cacheenc.DeriveKey(seed1)
+	key2 := cacheenc.DeriveKey(seed2)
 
 	// Different seeds should produce different keys
 	if bytes.Equal(key1[:], key2[:]) {
@@ -136,7 +142,7 @@ func TestCacheKeyDerivation(t *testing.T) {
 	}
 
 	// Same seed should produce same key (deterministic)
-	key1_again := deriveCacheKey(seed1)
+	key1_again := cacheenc.DeriveKey(seed1)
 	if !bytes.Equal(key1[:], key1_again[:]) {
 		t.Error("same seed produced different keys (not deterministic)")
 	}
@@ -155,13 +161,14 @@ func TestCacheWrongKey(t *testing.T) {
 	}
 
 	// Encrypt with seed1
-	encrypted, err := encryptCacheWithASCON(original, seed1)
+	encrypted, err := cacheenc.Encrypt(original, seed1)
 	if err != nil {
 		t.Fatalf("encryption failed: %v", err)
 	}
 
 	// Try to decrypt with wrong seed2
-	_, err = decryptCacheIntoShared(encrypted, seed2)
+	var out sharedCacheType
+	err = cacheenc.Decrypt(encrypted, seed2, &out)
 	if err == nil {
 		t.Error("decryption with wrong key should fail!")
 	} else {
@@ -169,8 +176,8 @@ func TestCacheWrongKey(t *testing.T) {
 	}
 
 	// Decrypt with correct seed1 should work
-	decrypted, err := decryptCacheIntoShared(encrypted, seed1)
-	if err != nil {
+	var decrypted sharedCacheType
+	if err := cacheenc.Decrypt(encrypted, seed1, &decrypted); err != nil {
 		t.Errorf("decryption with correct key failed: %v", err)
 	}
 	if decrypted.GOGARBLE != "secret-data" {
@@ -186,19 +193,19 @@ func TestCacheEmptyData(t *testing.T) {
 		ListedPackages: make(map[string]*listedPackage),
 	}
 
-	encrypted, err := encryptCacheWithASCON(empty, seed)
+	encrypted, err := cacheenc.Encrypt(empty, seed)
 	if err != nil {
 		t.Fatalf("encryption of empty cache failed: %v", err)
 	}
 
 	// Should still have nonce + tag (32 bytes minimum)
-	if len(encrypted) < 32 {
+	if len(encrypted) < cacheenc.NonceSize+cacheenc.TagSize {
 		t.Errorf("encrypted empty cache too short: %d bytes", len(encrypted))
 	}
 
 	// Decrypt
-	decrypted, err := decryptCacheIntoShared(encrypted, seed)
-	if err != nil {
+	var decrypted sharedCacheType
+	if err := cacheenc.Decrypt(encrypted, seed, &decrypted); err != nil {
 		t.Fatalf("decryption of empty cache failed: %v", err)
 	}
 
@@ -213,18 +220,20 @@ func TestCacheEncryptionSeedSelection(t *testing.T) {
 	originalFlag := flagCacheEncrypt
 	originalSeed := flagSeed
 	originalShared := sharedCache
+	originalWarnWriter := cacheEncryptWarnWriter
 	t.Cleanup(func() {
 		flagCacheEncrypt = originalFlag
 		flagSeed = originalSeed
 		sharedCache = originalShared
+		cacheEncryptWarnWriter = originalWarnWriter
 	})
 
 	// Case 1: Encryption disabled entirely
 	flagCacheEncrypt = false
 	sharedCache = &sharedCacheType{OriginalSeed: []byte("should-not-be-used")}
 	flagSeed = seedFlag{bytes: []byte("should-not-be-used")}
-	if got := cacheEncryptionSeed(); got != nil {
-		t.Fatalf("expected nil seed when encryption disabled, got %x", got)
+	if got, fallback := cacheEncryptionSeed(); got != nil || fallback {
+		t.Fatalf("expected nil seed when encryption disabled, got %x (fallback=%v)", got, fallback)
 	}
 
 	// Case 2: Shared cache provides canonical seed
@@ -232,21 +241,39 @@ func TestCacheEncryptionSeedSelection(t *testing.T) {
 	sharedSeed := []byte("shared-seed")
 	sharedCache = &sharedCacheType{OriginalSeed: sharedSeed}
 	flagSeed = seedFlag{bytes: []byte("fallback-seed")}
-	if got := cacheEncryptionSeed(); !bytes.Equal(got, sharedSeed) {
-		t.Fatalf("expected shared seed %q, got %x", sharedSeed, got)
+	if got, fallback := cacheEncryptionSeed(); !bytes.Equal(got, sharedSeed) || fallback {
+		t.Fatalf("expected shared seed %q, got %x (fallback=%v)", sharedSeed, got, fallback)
 	}
 
 	// Case 3: Fall back to CLI seed when shared cache missing
 	sharedCache = nil
 	cliSeedRaw := []byte("cli-seed")
 	flagSeed = seedFlag{bytes: cliSeedRaw}
-	if got := cacheEncryptionSeed(); !bytes.Equal(got, cliSeedRaw) {
-		t.Fatalf("expected CLI seed %q, got %x", cliSeedRaw, got)
+	if got, fallback := cacheEncryptionSeed(); !bytes.Equal(got, cliSeedRaw) || fallback {
+		t.Fatalf("expected CLI seed %q, got %x (fallback=%v)", cliSeedRaw, got, fallback)
 	}
 
-	// Case 4: No seeds available -> nil result
+	cacheEncryptWarnWriter = io.Discard
+	cacheEncryptWarnOnce = sync.Once{}
+
+	// Case 4: Build nonce fallback is automatic when encryption stays enabled
+	fallbackNonce := []byte("nonce-for-fallback")
+	sharedCache = &sharedCacheType{BuildNonce: fallbackNonce}
 	flagSeed = seedFlag{}
-	if got := cacheEncryptionSeed(); got != nil {
-		t.Fatalf("expected nil when no seeds available, got %x", got)
+	got, fallback := cacheEncryptionSeed()
+	if !fallback {
+		t.Fatalf("expected fallback flag when using build nonce")
+	}
+	expected := combineSeedAndNonce(nil, fallbackNonce)
+	if !bytes.Equal(got, expected) {
+		t.Fatalf("expected fallback seed %x, got %x", expected, got)
+	}
+
+	// Case 5: No build nonce or seed -> nil result with warning
+	sharedCache = &sharedCacheType{}
+	cacheEncryptWarnOnce = sync.Once{}
+	got, fallback = cacheEncryptionSeed()
+	if got != nil || fallback {
+		t.Fatalf("expected nil when no seeds available, got %x (fallback=%v)", got, fallback)
 	}
 }

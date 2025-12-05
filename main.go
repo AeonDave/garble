@@ -26,11 +26,12 @@ import (
 	"runtime"
 	"runtime/debug"
 	"runtime/pprof"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/AeonDave/garble/internal/cmdquoted"
 	"github.com/AeonDave/garble/internal/ctrlflow"
+	"github.com/AeonDave/garble/internal/ldflags"
 	"github.com/AeonDave/garble/internal/linker"
 	"github.com/AeonDave/garble/internal/literals"
 )
@@ -105,25 +106,28 @@ var booleanFlags = map[string]bool{
 }
 
 var flagSet = flag.NewFlagSet("garble", flag.ExitOnError)
-var rxGarbleFlag = regexp.MustCompile(`-(?:literals|tiny|debug|debugdir|seed|reversible|controlflow)(?:$|=)`)
+var rxGarbleFlag = regexp.MustCompile(`-(?:literals|tiny|debug|debugdir|seed|reversible|controlflow|cache-encrypt-nonce)(?:$|=)`)
 
 var (
-	flagLiterals         bool
-	flagTiny             bool
-	flagDebug            bool
-	flagDebugDir         string
-	flagSeed             seedFlag
-	flagReversible       bool
-	flagCacheEncrypt     = true // Default ON for security
-	buildNonceRandom     bool
-	flagControlFlowMode  = ctrlflow.ModeOff
-	controlFlowFlagValue = controlFlowFlag{mode: ctrlflow.ModeOff}
+	flagLiterals                  bool
+	flagTiny                      bool
+	flagDebug                     bool
+	flagDebugDir                  string
+	flagSeed                      seedFlag
+	flagReversible                bool
+	flagCacheEncrypt              = true // Default ON for security
+	flagCacheEncryptNonceFallback bool
+	buildNonceRandom              bool
+	flagControlFlowMode           = ctrlflow.ModeOff
+	controlFlowFlagValue          = controlFlowFlag{mode: ctrlflow.ModeOff}
 
 	// Presumably OK to share fset across packages.
 	fset = token.NewFileSet()
 
 	sharedTempDir = os.Getenv("GARBLE_SHARED")
 )
+
+var requestedOutputPath string
 
 func init() {
 	flagSet.Usage = usage
@@ -137,6 +141,7 @@ func init() {
 
 	var noCacheEncrypt bool
 	flagSet.BoolVar(&noCacheEncrypt, "no-cache-encrypt", false, "Disable cache encryption (not recommended for production)")
+	flagSet.BoolVar(&flagCacheEncryptNonceFallback, "cache-encrypt-nonce", false, "Encrypt cache using the build nonce when no seed is provided (per-build cache entries)")
 }
 
 //goland:noinspection GoUnhandledErrorResult
@@ -309,7 +314,10 @@ func mainErr(args []string) error {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		log.Printf("calling via toolexec: %s", cmd)
-		return cmd.Run()
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+		return finalizeRequestedOutput(sharedCache.GoEnv.GOOS)
 
 	case "toolexec":
 		_, tool := filepath.Split(args[0])
@@ -357,7 +365,6 @@ func mainErr(args []string) error {
 			defer unlock()
 
 			executablePath = modifiedLinkPath
-			_ = os.Setenv(linker.MagicValueEnv, strconv.FormatUint(uint64(magicValue()), 10))
 
 			// Phase 2: Feistel encryption (runtime will use this instead of XOR)
 			seed := feistelSeed()
@@ -398,6 +405,7 @@ func toolexecCmd(command string, args []string) (*exec.Cmd, error) {
 	// Split the flags from the package arguments, since we'll need
 	// to run 'go list' on the same set of packages.
 	flags, args := splitFlagsFromArgs(args)
+	recordRequestedOutput(flags)
 	if hasHelpFlag(flags) {
 		out, _ := exec.Command("go", command, "-h").CombinedOutput()
 		_, _ = fmt.Fprintf(os.Stderr, `
@@ -431,10 +439,11 @@ This command wraps "go %s". Below is its help:
 
 	// Note that we also need to pass build flags to 'go list', such
 	// as -tags.
-	flags, err = sanitizeLinkerFlags(flags)
+	flags, capturedLdflags, err := ldflags.Sanitize(flags)
 	if err != nil {
 		return nil, err
 	}
+	sharedCache.LinkerInjectedStrings = capturedLdflags
 	sharedCache.ForwardBuildFlags, _ = filterForwardBuildFlags(flags)
 	if command == "test" {
 		sharedCache.ForwardBuildFlags = append(sharedCache.ForwardBuildFlags, "-test")
@@ -523,7 +532,7 @@ This command wraps "go %s". Below is its help:
 	// We can add extra flags to the end of the same -toolexec argument.
 	var toolexecFlag strings.Builder
 	toolexecFlag.WriteString("-toolexec=")
-	quotedExecPath, err := cmdgoQuotedJoin([]string{execPath})
+	quotedExecPath, err := cmdquoted.Join([]string{execPath})
 	if err != nil {
 		// Can only happen if the absolute path to the garble binary contains
 		// both single and double quotes. Seems extremely unlikely.
@@ -664,44 +673,121 @@ func goVersionOK() bool {
 		unsupportedGo = "go1.26"   // the first major version we don't support
 	)
 
-	// rxVersion looks for a version like "go1.2" or "go1.2.3" in `go env GOVERSION`.
-	rxVersion := regexp.MustCompile(`go\d+\.\d+(?:\.\d+)?`)
-
-	toolchainVersionFull := sharedCache.GoEnv.GOVERSION
-	sharedCache.GoVersion = rxVersion.FindString(toolchainVersionFull)
-	if sharedCache.GoVersion == "" {
+	toolchainVersion := sharedCache.GoEnv.GOVERSION
+	if toolchainVersion == "" {
 		// Go 1.15.x and older did not have GOVERSION yet; they are too old anyway.
 		_, _ = fmt.Fprintf(os.Stderr, "Go version is too old; please upgrade to %s or newer\n", minGoVersion)
 		return false
 	}
 
-	if version.Compare(sharedCache.GoVersion, minGoVersion) < 0 {
-		_, _ = fmt.Fprintf(os.Stderr, "Go version %q is too old; please upgrade to %s or newer\n", toolchainVersionFull, minGoVersion)
+	if !version.IsValid(toolchainVersion) {
+		fmt.Fprintf(os.Stderr, "Go version %q appears to be invalid or too old; use %s or newer\n", toolchainVersion, minGoVersion)
 		return false
 	}
-	if version.Compare(sharedCache.GoVersion, unsupportedGo) >= 0 {
-		_, _ = fmt.Fprintf(os.Stderr, "Go version %q is too new; Go linker patches aren't available for %s or later yet\n", toolchainVersionFull, unsupportedGo)
+	if version.Compare(toolchainVersion, minGoVersion) < 0 {
+		fmt.Fprintf(os.Stderr, "Go version %q is too old; please upgrade to %s or newer\n", toolchainVersion, minGoVersion)
+		return false
+	}
+	if version.Compare(toolchainVersion, unsupportedGo) >= 0 {
+		fmt.Fprintf(os.Stderr, "Go version %q is too new; Go linker patches aren't available for %s or later yet\n", toolchainVersion, unsupportedGo)
 		return false
 	}
 
 	// Ensure that the version of Go that built the garble binary is equal or
 	// newer than cache.GoVersionSemver.
-	builtVersionFull := cmp.Or(os.Getenv("GARBLE_TEST_GOVERSION"), runtime.Version())
-	builtVersion := rxVersion.FindString(builtVersionFull)
-	if builtVersion == "" {
+	builtVersion := cmp.Or(os.Getenv("GARBLE_TEST_GOVERSION"), runtime.Version())
+	if !version.IsValid(builtVersion) {
 		// If garble built itself, we don't know what Go version was used.
 		// Fall back to not performing the check against the toolchain version.
 		return true
 	}
-	if version.Compare(builtVersion, sharedCache.GoVersion) < 0 {
-		_, _ = fmt.Fprintf(os.Stderr, `
+	if version.Compare(builtVersion, toolchainVersion) < 0 {
+		fmt.Fprintf(os.Stderr, `
 garble was built with %q and can't be used with the newer %q; rebuild it with a command like:
     go install github.com/AeonDave/garble@latest
-`[1:], builtVersionFull, toolchainVersionFull)
+`[1:], builtVersion, toolchainVersion)
 		return false
 	}
 
 	return true
+}
+
+func recordRequestedOutput(flags []string) {
+	requestedOutputPath = ""
+	for i := 0; i < len(flags); i++ {
+		f := flags[i]
+		if f == "-o" {
+			i++
+			if i < len(flags) {
+				requestedOutputPath = flags[i]
+			}
+			continue
+		}
+		if strings.HasPrefix(f, "-o=") {
+			requestedOutputPath = f[len("-o="):]
+		}
+	}
+}
+
+func finalizeRequestedOutput(targetGOOS string) error {
+	path := requestedOutputPath
+	requestedOutputPath = ""
+	if path == "" {
+		return nil
+	}
+
+	if targetGOOS == "" {
+		targetGOOS = runtime.GOOS
+	}
+
+	if targetGOOS == "windows" {
+		return nil
+	}
+
+	if !strings.EqualFold(filepath.Ext(path), ".exe") {
+		return nil
+	}
+
+	alias := strings.TrimSuffix(path, filepath.Ext(path))
+	if alias == "" || alias == path {
+		return nil
+	}
+
+	if _, err := os.Stat(alias); err == nil {
+		return nil
+	}
+
+	if err := os.Link(path, alias); err == nil {
+		return nil
+	}
+	return copyFile(path, alias)
+}
+
+func copyFile(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("cannot copy directory %q to %q", src, dst)
+	}
+
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+	if err != nil {
+		return err
+	}
+	defer func() { _ = out.Close() }()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Sync()
 }
 
 func usage() {
@@ -763,99 +849,6 @@ func filterForwardBuildFlags(flags []string) (filtered []string, firstUnknown st
 		}
 	}
 	return filtered, firstUnknown
-}
-
-type ldflagEntry struct {
-	fullName string
-	value    string
-}
-
-// sanitizeLinkerFlags extracts plaintext -X assignments and replaces them with
-// empty assignments so that the linker never sees the original value. The
-// plaintext is stored in sharedCache.LinkerInjectedStrings for later runtime
-// obfuscation. The returned slice is a sanitized copy of the provided flags.
-func sanitizeLinkerFlags(flags []string) ([]string, error) {
-	sharedCache.LinkerInjectedStrings = make(map[string]string)
-
-	sanitized := append([]string(nil), flags...)
-
-	for i := 0; i < len(sanitized); i++ {
-		arg := sanitized[i]
-		switch {
-		case strings.HasPrefix(arg, "-ldflags="):
-			value := strings.TrimPrefix(arg, "-ldflags=")
-			rewritten, entries, err := sanitizeLdflagsValue(value)
-			if err != nil {
-				return nil, err
-			}
-			for _, entry := range entries {
-				sharedCache.LinkerInjectedStrings[entry.fullName] = entry.value
-			}
-			sanitized[i] = "-ldflags=" + rewritten
-
-		case arg == "-ldflags":
-			if i+1 >= len(sanitized) {
-				continue
-			}
-			rewritten, entries, err := sanitizeLdflagsValue(sanitized[i+1])
-			if err != nil {
-				return nil, err
-			}
-			for _, entry := range entries {
-				sharedCache.LinkerInjectedStrings[entry.fullName] = entry.value
-			}
-			sanitized[i+1] = rewritten
-		}
-	}
-
-	return sanitized, nil
-}
-
-func sanitizeLdflagsValue(value string) (string, []ldflagEntry, error) {
-	if strings.TrimSpace(value) == "" {
-		return value, nil, nil
-	}
-
-	parts, err := cmdgoQuotedSplit(value)
-	if err != nil {
-		return "", nil, err
-	}
-
-	entries := make([]ldflagEntry, 0, len(parts))
-
-	record := func(fullName, plain string) {
-		entries = append(entries, ldflagEntry{fullName: fullName, value: plain})
-	}
-
-	for i := 0; i < len(parts); i++ {
-		part := parts[i]
-		if strings.HasPrefix(part, "-X=") {
-			payload := strings.TrimPrefix(part, "-X=")
-			fullName, plain, ok := strings.Cut(payload, "=")
-			if !ok {
-				continue
-			}
-			record(fullName, plain)
-			parts[i] = "-X=" + fullName + "="
-			continue
-		}
-		if part == "-X" && i+1 < len(parts) {
-			payload := parts[i+1]
-			fullName, plain, ok := strings.Cut(payload, "=")
-			if !ok {
-				continue
-			}
-			record(fullName, plain)
-			parts[i+1] = fullName + "="
-		}
-	}
-
-	joined, err := cmdgoQuotedJoin(parts)
-	if err != nil {
-		return "", nil, err
-	}
-
-	return joined, entries, nil
 }
 
 // splitFlagsFromFiles splits args into a list of flag and file arguments. Since
@@ -950,6 +943,9 @@ To install Go, see: https://go.dev/doc/install
 	if err := json.Unmarshal(out, &sharedCache.GoEnv); err != nil {
 		return fmt.Errorf(`cannot unmarshal from "go env -json": %w`, err)
 	}
+
+	// Trim any extra data after the semantic version, e.g. "go1.25.0 X:nodwarf5"
+	sharedCache.GoEnv.GOVERSION, _, _ = strings.Cut(sharedCache.GoEnv.GOVERSION, " ")
 
 	// Some Go version managers switch between Go versions via a GOROOT which symlinks
 	// to one of the available versions. Given that later we build a patched linker

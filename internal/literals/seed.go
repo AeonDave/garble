@@ -1,12 +1,8 @@
-// Copyright (c) 2020, The Garble Authors.
-// See LICENSE for licensing information.
-
 package literals
 
 import (
 	"go/ast"
 	"go/token"
-	mathrand "math/rand"
 
 	ah "github.com/AeonDave/garble/internal/asthelper"
 )
@@ -16,29 +12,30 @@ type seed struct{}
 // check that the obfuscator interface is implemented
 var _ obfuscator = seed{}
 
-func (seed) obfuscate(obfRand *mathrand.Rand, data []byte, extKeys []*externalKey) *ast.BlockStmt {
-	seed := byte(obfRand.Uint32())
+func (seed) obfuscate(ctx *obfRand, data []byte, extKeys []*externalKey) *ast.BlockStmt {
+	rand := ctx.Rand
+	seed := byte(rand.Uint32())
 	originalSeed := seed
 
-	op := randOperator(obfRand)
+	op := randOperator(rand)
 	var callExpr *ast.CallExpr
 	for i, b := range data {
 		encB := evalOperator(op, b, seed)
 		seed += encB
 
 		if i == 0 {
-			callExpr = ah.CallExpr(ast.NewIdent("fnc"), byteLitWithExtKey(obfRand, encB, extKeys, highProb))
+			callExpr = ah.CallExpr(ast.NewIdent("fnc"), byteLitWithExtKey(rand, encB, extKeys, highProb))
 			continue
 		}
 
-		callExpr = ah.CallExpr(callExpr, byteLitWithExtKey(obfRand, encB, extKeys, lowProb))
+		callExpr = ah.CallExpr(callExpr, byteLitWithExtKey(rand, encB, extKeys, lowProb))
 	}
 
 	return ah.BlockStmt(
 		&ast.AssignStmt{
 			Lhs: []ast.Expr{ast.NewIdent("seed")},
 			Tok: token.DEFINE,
-			Rhs: []ast.Expr{ah.CallExprByName("byte", byteLitWithExtKey(obfRand, originalSeed, extKeys, highProb))},
+			Rhs: []ast.Expr{ah.CallExprByName("byte", byteLitWithExtKey(rand, originalSeed, extKeys, highProb))},
 		},
 		&ast.DeclStmt{
 			Decl: &ast.GenDecl{

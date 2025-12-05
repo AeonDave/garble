@@ -3,8 +3,8 @@
 package literals
 
 import (
+	"fmt"
 	"os"
-	"strconv"
 	"strings"
 )
 
@@ -19,13 +19,17 @@ func init() {
 	pairs := strings.Split(obfMapEnv, ",")
 	for _, pair := range pairs {
 		keyValue := strings.SplitN(pair, "=", 2)
+		if len(keyValue) != 2 {
+			panic(fmt.Sprintf("invalid obfuscator map entry: %q", pair))
+		}
 
 		pkgName := keyValue[0]
-		obfIndex, err := strconv.Atoi(keyValue[1])
-		if err != nil {
-			panic(err)
+		strategyName := keyValue[1]
+		obf, ok := strategyByName(strategyName)
+		if !ok {
+			panic(fmt.Sprintf("unknown literal obfuscator strategy %q", strategyName))
 		}
-		testPkgToObfuscatorMap[pkgName] = Obfuscators[obfIndex]
+		testPkgToObfuscatorMap[pkgName] = obf
 	}
 	TestObfuscator = obfMapEnv
 }

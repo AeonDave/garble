@@ -29,6 +29,7 @@ import (
 // Note that we fill this cache once from the root process in saveListedPackages,
 // store it into a temporary file via gob encoding, and then reuse that file
 // in each of the garble toolexec sub-processes.
+
 type sharedCacheType struct {
 	ForwardBuildFlags []string // build flags fed to the original "garble ..." command
 
@@ -61,18 +62,12 @@ type sharedCacheType struct {
 	// of the Go tool that the original "go build" invocation did.
 	GoCmd string
 
-	// GoVersion is a version of the Go toolchain currently being used,
-	// as reported by "go env GOVERSION" and compatible with go/version.
-	// Note that the version of Go that built the garble binary might be newer.
-	// Also note that a devel version like "go1.22-231f290e51" is
-	// currently represented as "go1.22", as the suffix is ignored by go/version.
-	GoVersion string
-
 	// Filled directly from "go env".
 	// Keep in sync with fetchGoEnv.
 	GoEnv struct {
 		GOOS   string // the GOOS build target
 		GOARCH string // the GOARCH build target
+		GOMOD  string // go.mod file for the main module
 
 		GOVERSION string
 		GOROOT    string
@@ -357,6 +352,9 @@ func appendListedPackages(packages []string, mainBuild bool) error {
 			} else if !mainBuild && strings.Contains(perr.Err, "is not in std") {
 				// When we support multiple Go versions at once, some packages may only
 				// exist in the newer version, so we fail to list them with the older.
+			} else if !mainBuild && strings.Contains(perr.Err, "not a dependency") {
+				// Pack-required packages may not be dependencies of the current package
+				// This is expected and should be ignored
 			} else {
 				if pkgErrors.Len() > 0 {
 					pkgErrors.WriteString("\n")
@@ -377,7 +375,9 @@ func appendListedPackages(packages []string, mainBuild bool) error {
 		// "build constraints exclude all Go files" and can be ignored.
 		// Real build errors will still be surfaced by `go build -toolexec` later.
 		if sharedCache.ListedPackages[pkg.ImportPath] != nil {
-			return fmt.Errorf("duplicate package: %q", pkg.ImportPath)
+			// Package already loaded - this can happen when pack pre-loads stdlib packages
+			// that are also dependencies of the main build. Skip silently.
+			continue
 		}
 		if pkg.BuildID != "" {
 			actionID := decodeBuildIDHash(splitActionID(pkg.BuildID))

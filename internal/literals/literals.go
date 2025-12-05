@@ -1,6 +1,3 @@
-// Copyright (c) 2020, The Garble Authors.
-// See LICENSE for licensing information.
-
 package literals
 
 import (
@@ -39,12 +36,19 @@ func SetReversibleMode(reversible bool) {
 	reversibleMode = reversible
 }
 
+type BuilderConfig struct {
+	KeyProvider KeyProvider
+}
+
 type Builder struct {
 	obfRand *obfRand
 }
 
-func NewBuilder(rand *mathrand.Rand, file *ast.File, nameFunc NameProviderFunc) *Builder {
-	return &Builder{obfRand: newObfRand(rand, file, nameFunc)}
+func NewBuilder(rand *mathrand.Rand, file *ast.File, nameFunc NameProviderFunc, cfg BuilderConfig) *Builder {
+	if cfg.KeyProvider == nil {
+		panic("literals: Builder requires a key provider")
+	}
+	return &Builder{obfRand: newObfRand(rand, file, nameFunc, cfg.KeyProvider)}
 }
 
 func (b *Builder) ObfuscateFile(file *ast.File, info *types.Info, linkStrings map[*types.Var]string) *ast.File {
@@ -127,11 +131,14 @@ func (b *Builder) Finalize(file *ast.File) {
 	if b.obfRand.asconHelper.used {
 		insertAsconInlineCode(file, b.obfRand.asconHelper)
 	}
+	if b.obfRand.irreversibleHelper.used {
+		insertIrreversibleInlineCode(file, b.obfRand.irreversibleHelper)
+	}
 }
 
 // Obfuscate replaces literals with obfuscated anonymous functions.
-func Obfuscate(rand *mathrand.Rand, file *ast.File, info *types.Info, linkStrings map[*types.Var]string, nameFunc NameProviderFunc) *ast.File {
-	b := NewBuilder(rand, file, nameFunc)
+func Obfuscate(rand *mathrand.Rand, file *ast.File, info *types.Info, linkStrings map[*types.Var]string, nameFunc NameProviderFunc, cfg BuilderConfig) *ast.File {
+	b := NewBuilder(rand, file, nameFunc, cfg)
 	newFile := b.ObfuscateFile(file, info, linkStrings)
 	b.Finalize(newFile)
 	return newFile
@@ -249,7 +256,7 @@ func obfuscateString(obfRand *obfRand, data string) *ast.CallExpr {
 	plainData := []byte(data)
 	plainDataWithJunkBytes := append(append(junkBytes[:splitIdx], plainData...), junkBytes[splitIdx:]...)
 
-	block := obf.obfuscate(obfRand.Rand, plainDataWithJunkBytes, extKeys)
+	block := obf.obfuscate(obfRand, plainDataWithJunkBytes, extKeys)
 	params, args := extKeysToParams(obfRand, extKeys)
 
 	// Generate unique cast bytes to string function and hide it using proxyDispatcher:
@@ -295,7 +302,7 @@ func obfuscateByteSlice(obfRand *obfRand, isPointer bool, data []byte) *ast.Call
 	obf := getNextObfuscator(obfRand, len(data))
 
 	extKeys := randExtKeys(obfRand.Rand)
-	block := obf.obfuscate(obfRand.Rand, data, extKeys)
+	block := obf.obfuscate(obfRand, data, extKeys)
 	params, args := extKeysToParams(obfRand, extKeys)
 
 	if isPointer {
@@ -313,7 +320,7 @@ func obfuscateByteArray(obfRand *obfRand, isPointer bool, data []byte, length in
 	obf := getNextObfuscator(obfRand, len(data))
 
 	extKeys := randExtKeys(obfRand.Rand)
-	block := obf.obfuscate(obfRand.Rand, data, extKeys)
+	block := obf.obfuscate(obfRand, data, extKeys)
 	params, args := extKeysToParams(obfRand, extKeys)
 
 	arrayType := ah.ByteArrayType(length)

@@ -21,48 +21,18 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/AeonDave/garble/internal/consts"
 	"github.com/AeonDave/garble/internal/ctrlflow"
+	"github.com/AeonDave/garble/internal/ldflags"
 	"github.com/AeonDave/garble/internal/literals"
+	"github.com/AeonDave/garble/internal/pipeline"
+	typesutil "github.com/AeonDave/garble/internal/typesutil"
 	"golang.org/x/tools/go/ast/astutil"
 	"golang.org/x/tools/go/ssa"
 )
 
 // cmd/bundle will include a go:generate directive in its output by default.
 // Ours specifies a version and doesn't assume bundle is in $PATH, so drop it.
-
-//go:generate go tool bundle -o cmdgo_quoted.go -prefix cmdgoQuoted cmd/internal/quoted
-//go:generate sed -i /go:generate/d cmdgo_quoted.go
-
-// computeLinkerVariableStrings iterates over the -ldflags arguments,
-// filling a map with all the string values set via the linker's -X flag.
-// TODO: can we put this in sharedCache, using objectString as a key?
-func computeLinkerVariableStrings(pkg *types.Package) (map[*types.Var]string, error) {
-	linkerVariableStrings := make(map[*types.Var]string)
-
-	if len(sharedCache.LinkerInjectedStrings) == 0 {
-		return linkerVariableStrings, nil
-	}
-
-	for fullName, stringValue := range sharedCache.LinkerInjectedStrings {
-		idx := strings.LastIndex(fullName, ".")
-		if idx <= 0 {
-			continue
-		}
-		path, name := fullName[:idx], fullName[idx+1:]
-
-		if path != pkg.Path() && (path != "main" || pkg.Name() != "main") {
-			continue
-		}
-
-		obj, _ := pkg.Scope().Lookup(name).(*types.Var)
-		if obj == nil {
-			continue
-		}
-		linkerVariableStrings[obj] = stringValue
-	}
-
-	return linkerVariableStrings, nil
-}
 
 func typecheck(pkgPath string, files []*ast.File, origImporter importerWithMap) (*types.Package, *types.Info, error) {
 	info := &types.Info{
@@ -85,129 +55,6 @@ func typecheck(pkgPath string, files []*ast.File, origImporter importerWithMap) 
 		return nil, nil, fmt.Errorf("typecheck error: %v", err)
 	}
 	return pkg, info, err
-}
-
-func computeFieldToStruct(info *types.Info) map[*types.Var]*types.Struct {
-	done := make(map[*types.Named]bool)
-	fieldToStruct := make(map[*types.Var]*types.Struct)
-
-	// Run recordType on all types reachable via types.Info.
-	// A bit hacky, but I could not find an easier way to do this.
-	for _, obj := range info.Uses {
-		if obj != nil {
-			recordType(obj.Type(), nil, done, fieldToStruct)
-		}
-	}
-	for _, obj := range info.Defs {
-		if obj != nil {
-			recordType(obj.Type(), nil, done, fieldToStruct)
-		}
-	}
-	for _, tv := range info.Types {
-		recordType(tv.Type, nil, done, fieldToStruct)
-	}
-	return fieldToStruct
-}
-
-// recordType visits every reachable type after typechecking a package.
-// Right now, all it does is fill the fieldToStruct map.
-// Since types can be recursive, we need a map to avoid cycles.
-// We only need to track named types as done, as all cycles must use them.
-func recordType(used, origin types.Type, done map[*types.Named]bool, fieldToStruct map[*types.Var]*types.Struct) {
-	used = types.Unalias(used)
-	if origin == nil {
-		origin = used
-	} else {
-		origin = types.Unalias(origin)
-		// origin may be a [*types.TypeParam].
-		// For now, we haven't found a need to recurse in that case.
-		// We can edit this code in the future if we find an example,
-		// because we panic if a field is not in fieldToStruct.
-		if _, ok := origin.(*types.TypeParam); ok {
-			return
-		}
-	}
-	type Container interface{ Elem() types.Type }
-	switch used := used.(type) {
-	case Container:
-		recordType(used.Elem(), origin.(Container).Elem(), done, fieldToStruct)
-	case *types.Named:
-		if done[used] {
-			return
-		}
-		done[used] = true
-		// If we have a generic struct like
-		//
-		//	type Foo[T any] struct { Bar T }
-		//
-		// then we want the hashing to use the original "Bar T",
-		// because otherwise different instances like "Bar int" and "Bar bool"
-		// will result in different hashes and the field names will break.
-		// Ensure we record the original generic struct, if there is one.
-		recordType(used.Underlying(), used.Origin().Underlying(), done, fieldToStruct)
-	case *types.Struct:
-		origin := origin.(*types.Struct)
-		for i := range used.NumFields() {
-			field := used.Field(i)
-			fieldToStruct[field] = origin
-
-			if field.Embedded() {
-				recordType(field.Type(), origin.Field(i).Type(), done, fieldToStruct)
-			}
-		}
-	}
-}
-
-// isSafeForInstanceType returns true if the passed type is safe for var declaration.
-// Unsafe types: generic types and non-method interfaces.
-func isSafeForInstanceType(t types.Type) bool {
-	switch t := types.Unalias(t).(type) {
-	case *types.Basic:
-		return t.Kind() != types.Invalid
-	case *types.Named:
-		if t.TypeParams().Len() > 0 {
-			return false
-		}
-		return isSafeForInstanceType(t.Underlying())
-	case *types.Signature:
-		return t.TypeParams().Len() == 0
-	case *types.Interface:
-		return t.IsMethodSet()
-	}
-	return true
-}
-
-// namedType tries to obtain the *types.TypeName behind a type, if there is one.
-// This is useful to obtain "testing.T" from "*testing.T", or to obtain the type
-// declaration object from an embedded field.
-// Note that, for a type alias, this gives the alias name.
-func namedType(t types.Type) *types.TypeName {
-	switch t := t.(type) {
-	case *types.Alias:
-		return t.Obj()
-	case *types.Named:
-		return t.Obj()
-	case *types.Pointer:
-		return namedType(t.Elem())
-	default:
-		return nil
-	}
-}
-
-// isTestSignature returns true if the signature matches "func _(*testing.T)".
-func isTestSignature(sign *types.Signature) bool {
-	if sign.Recv() != nil {
-		return false // test funcs don't have receivers
-	}
-	params := sign.Params()
-	if params.Len() != 1 {
-		return false // too many parameters for a test func
-	}
-	tname := namedType(params.At(0).Type())
-	if tname == nil {
-		return false // the only parameter isn't named, like "string"
-	}
-	return tname.Pkg().Path() == "testing" && tname.Name() == "T"
 }
 
 func splitFlagsFromArgs(all []string) (flags, args []string) {
@@ -282,12 +129,17 @@ type transformer struct {
 	actionGraph []buildAction
 
 	linkerInitInjected bool
-	constTransforms    map[*types.Const]*constTransform
+	constTransforms    map[*types.Const]*consts.Transform
 }
 
-type constTransform struct {
-	uses   []*ast.Ident
-	varObj *types.Var
+type compileContext struct {
+	tf           *transformer
+	flags        []string
+	paths        []string
+	files        []*ast.File
+	ssaPkg       *ssa.Package
+	requiredPkgs []string
+	emittedPaths []string
 }
 
 func (tf *transformer) writeSourceFile(basename, obfuscated string, content []byte) (string, error) {
@@ -562,44 +414,69 @@ func (tf *transformer) rewriteAsmSource(path string, buf, includeBuf *bytes.Buff
 
 func (tf *transformer) transformCompile(args []string) ([]string, error) {
 	flags, paths := splitFlagsFromFiles(args, ".go")
-	flags = tf.disableDWARFGeneration(flags)
+	ctx := &compileContext{
+		tf:    tf,
+		flags: tf.disableDWARFGeneration(flags),
+		paths: paths,
+	}
 
-	files, err := tf.parseCompileFiles(paths)
-	if err != nil {
+	pipe := pipeline.New[*compileContext]()
+	pipe.Add(pipeline.NewFuncStep("parse-go-files", func(ctx *compileContext) error {
+		files, err := ctx.tf.parseCompileFiles(ctx.paths)
+		if err != nil {
+			return err
+		}
+		ctx.files = files
+		return nil
+	}))
+	pipe.Add(pipeline.NewFuncStep("seed-obfuscation-rand", func(ctx *compileContext) error {
+		return ctx.tf.seedObfuscationRand()
+	}))
+	pipe.Add(pipeline.NewFuncStep("typecheck", func(ctx *compileContext) error {
+		return ctx.tf.typecheckParsedFiles(ctx.files)
+	}))
+	pipe.Add(pipeline.NewFuncStep("control-flow", func(ctx *compileContext) error {
+		ssaPkg, requiredPkgs, err := ctx.tf.applyControlFlowTransforms(&ctx.files, &ctx.paths)
+		if err != nil {
+			return err
+		}
+		ctx.ssaPkg = ssaPkg
+		ctx.requiredPkgs = requiredPkgs
+		return nil
+	}))
+	pipe.Add(pipeline.NewFuncStep("prepare-obfuscation", func(ctx *compileContext) error {
+		return ctx.tf.prepareObfuscationState(ctx.files, ctx.ssaPkg)
+	}))
+	pipe.Add(pipeline.NewFuncStep("normalize-trimpath", func(ctx *compileContext) error {
+		ctx.flags = alterTrimpath(ctx.flags)
+		return nil
+	}))
+	pipe.Add(pipeline.NewFuncStep("rewrite-importcfg", func(ctx *compileContext) error {
+		updated, err := ctx.tf.rewriteImportConfiguration(ctx.flags, ctx.requiredPkgs)
+		if err != nil {
+			return err
+		}
+		ctx.flags = updated
+		return nil
+	}))
+	pipe.Add(pipeline.NewFuncStep("set-package-flag", func(ctx *compileContext) error {
+		ctx.flags = flagSetValue(ctx.flags, "-p", ctx.tf.curPkg.obfuscatedImportPath())
+		return nil
+	}))
+	pipe.Add(pipeline.NewFuncStep("obfuscate-and-emit", func(ctx *compileContext) error {
+		newPaths, err := ctx.tf.obfuscateAndEmit(ctx.files, ctx.paths)
+		if err != nil {
+			return err
+		}
+		ctx.emittedPaths = newPaths
+		return nil
+	}))
+
+	if err := pipe.Execute(ctx); err != nil {
 		return nil, err
 	}
 
-	if err := tf.seedObfuscationRand(); err != nil {
-		return nil, err
-	}
-
-	if err := tf.typecheckParsedFiles(files); err != nil {
-		return nil, err
-	}
-
-	ssaPkg, requiredPkgs, err := tf.applyControlFlowTransforms(&files, &paths)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := tf.prepareObfuscationState(files, ssaPkg); err != nil {
-		return nil, err
-	}
-
-	flags = alterTrimpath(flags)
-	flags, err = tf.rewriteImportConfiguration(flags, requiredPkgs)
-	if err != nil {
-		return nil, err
-	}
-
-	flags = flagSetValue(flags, "-p", tf.curPkg.obfuscatedImportPath())
-
-	newPaths, err := tf.obfuscateAndEmit(files, paths)
-	if err != nil {
-		return nil, err
-	}
-
-	return append(flags, newPaths...), nil
+	return append(ctx.flags, ctx.emittedPaths...), nil
 }
 
 func (tf *transformer) disableDWARFGeneration(flags []string) []string {
@@ -619,6 +496,7 @@ func (tf *transformer) seedObfuscationRand() error {
 		return fmt.Errorf("seed length %d shorter than 8 bytes", len(randSeed))
 	}
 	tf.obfRand = mathrand.New(mathrand.NewSource(int64(binary.BigEndian.Uint64(randSeed[:8]))))
+
 	return nil
 }
 
@@ -631,23 +509,42 @@ func (tf *transformer) typecheckParsedFiles(files []*ast.File) error {
 }
 
 func (tf *transformer) applyControlFlowTransforms(files *[]*ast.File, paths *[]string) (*ssa.Package, []string, error) {
+	if !tf.curPkg.ToObfuscate {
+		return nil, nil, nil
+	}
+
+	if sharedCache != nil && sharedCache.GoEnv.GOMOD != "" && tf.curPkg.Dir != "" {
+		modRoot := filepath.Dir(sharedCache.GoEnv.GOMOD)
+		if rel, err := filepath.Rel(modRoot, tf.curPkg.Dir); err == nil {
+			if strings.HasPrefix(rel, "..") || rel == ".." {
+				return nil, nil, nil
+			}
+		}
+	}
+
 	mode := flagControlFlowMode
 	if tf.curPkg.Standard && mode != ctrlflow.ModeAnnotated {
 		// The standard library contains compiler intrinsics and patterns
 		// that the current control-flow pipeline cannot rewrite safely.
 		mode = ctrlflow.ModeAnnotated
 	}
+
+	// Collect required packages (from control-flow only)
+	// Pack-required packages are added later in finalize-pack step,
+	// after garble_pack.go is generated.
+	var requiredPkgs []string
+
 	if !mode.Enabled() {
-		return nil, nil, nil
+		return nil, requiredPkgs, nil
 	}
 	ssaPkg := ssaBuildPkg(tf.pkg, *files, tf.info)
 
-	newFileName, newFile, affectedFiles, err := ctrlflow.Obfuscate(fset, ssaPkg, *files, tf.obfRand, mode)
+	newFileName, newFile, affectedFiles, err := ctrlflow.Obfuscate(fset, ssaPkg, *files, tf.obfRand, mode, sharedTempDir)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	var requiredPkgs []string
+	// Add control-flow required packages if control-flow generated a new file
 	if newFile != nil {
 		*files = append(*files, newFile)
 		*paths = append(*paths, newFileName)
@@ -672,18 +569,18 @@ func (tf *transformer) applyControlFlowTransforms(files *[]*ast.File, paths *[]s
 
 func (tf *transformer) prepareObfuscationState(files []*ast.File, ssaPkg *ssa.Package) error {
 	var err error
-	if tf.linkerVariableStrings, err = computeLinkerVariableStrings(tf.pkg); err != nil {
+	if tf.linkerVariableStrings, err = ldflags.ResolveInjectedStrings(tf.pkg, sharedCache.LinkerInjectedStrings); err != nil {
 		return err
 	}
 	if tf.curPkgCache, err = loadPkgCache(tf.curPkg, tf.pkg, files, tf.info, ssaPkg); err != nil {
 		return err
 	}
-	tf.fieldToStruct = computeFieldToStruct(tf.info)
+	tf.fieldToStruct = typesutil.FieldToStruct(tf.info)
 	if flagLiterals && tf.curPkg.ToObfuscate {
-		tf.constTransforms = computeConstTransforms(files, tf.info, tf.pkg)
+		tf.constTransforms = consts.ComputeTransforms(files, tf.info, tf.pkg)
 		if len(tf.constTransforms) > 0 {
 			for _, file := range files {
-				tf.rewriteConstDecls(file)
+				consts.RewriteDecls(file, tf.info, tf.constTransforms)
 			}
 		}
 	}
@@ -710,7 +607,6 @@ func (tf *transformer) obfuscateAndEmit(files []*ast.File, paths []string) ([]st
 				tf.useAllImports(file)
 			}
 			if basename == "symtab.go" {
-				updateMagicValue(file, magicValue())
 				seed := feistelSeed()
 				var seedArray [32]byte
 				copy(seedArray[:], seed)
@@ -720,7 +616,7 @@ func (tf *transformer) obfuscateAndEmit(files []*ast.File, paths []string) ([]st
 		if err := tf.transformDirectives(file.Comments); err != nil {
 			return nil, err
 		}
-		file = tf.transformGoFile(file)
+		file = tf.transformGoFile(file, paths[i])
 		file.Name.Name = tf.curPkg.obfuscatedPackageName()
 
 		src, err := printFile(tf.curPkg, file)
@@ -739,267 +635,6 @@ func (tf *transformer) obfuscateAndEmit(files []*ast.File, paths []string) ([]st
 		newPaths = append(newPaths, path)
 	}
 	return newPaths, nil
-}
-func computeConstTransforms(files []*ast.File, info *types.Info, pkg *types.Package) map[*types.Const]*constTransform {
-	parentMaps := make(map[*ast.File]map[ast.Node]ast.Node, len(files))
-	constUses := make(map[*types.Const][]*ast.Ident)
-	identFile := make(map[*ast.Ident]*ast.File)
-
-	for _, file := range files {
-		parentMaps[file] = buildParentMap(file)
-		ast.Inspect(file, func(n ast.Node) bool {
-			ident, ok := n.(*ast.Ident)
-			if !ok {
-				return true
-			}
-			if info.Defs[ident] != nil {
-				return true
-			}
-			obj, ok := info.Uses[ident].(*types.Const)
-			if !ok || obj.Pkg() != pkg {
-				return true
-			}
-			constUses[obj] = append(constUses[obj], ident)
-			identFile[ident] = file
-			return true
-		})
-	}
-
-	requiresConst := make(map[*types.Const]bool, len(constUses))
-	for obj, idents := range constUses {
-		for _, ident := range idents {
-			if isConstContext(ident, parentMaps[identFile[ident]]) {
-				requiresConst[obj] = true
-				break
-			}
-		}
-	}
-
-	transforms := make(map[*types.Const]*constTransform)
-	for _, file := range files {
-		for _, decl := range file.Decls {
-			gen, ok := decl.(*ast.GenDecl)
-			if !ok || gen.Tok != token.CONST {
-				continue
-			}
-			for _, spec := range gen.Specs {
-				vs, ok := spec.(*ast.ValueSpec)
-				if !ok {
-					continue
-				}
-				if len(vs.Names) == 0 || len(vs.Values) != len(vs.Names) {
-					continue
-				}
-				for idx, name := range vs.Names {
-					obj, ok := info.Defs[name].(*types.Const)
-					if !ok || obj.Pkg() != pkg {
-						continue
-					}
-					if obj.Exported() {
-						continue
-					}
-					if requiresConst[obj] {
-						continue
-					}
-					uses := constUses[obj]
-					if len(uses) == 0 {
-						continue
-					}
-					if !isBasicStringConst(obj) {
-						continue
-					}
-					if lit, ok := vs.Values[idx].(*ast.BasicLit); !ok || lit.Kind != token.STRING {
-						continue
-					}
-					if _, seen := transforms[obj]; !seen {
-						transforms[obj] = &constTransform{uses: uses}
-					}
-				}
-			}
-		}
-	}
-
-	return transforms
-}
-
-func buildParentMap(root ast.Node) map[ast.Node]ast.Node {
-	parents := make(map[ast.Node]ast.Node)
-	var stack []ast.Node
-	ast.Inspect(root, func(n ast.Node) bool {
-		if n == nil {
-			if len(stack) > 0 {
-				stack = stack[:len(stack)-1]
-			}
-			return false
-		}
-		if len(stack) > 0 {
-			parents[n] = stack[len(stack)-1]
-		}
-		stack = append(stack, n)
-		return true
-	})
-	return parents
-}
-
-func isConstContext(node ast.Node, parents map[ast.Node]ast.Node) bool {
-	if parents == nil {
-		return false
-	}
-	child := node
-	for parent := parents[child]; parent != nil; child, parent = parent, parents[parent] {
-		switch p := parent.(type) {
-		case *ast.GenDecl:
-			if p.Tok == token.CONST {
-				return true
-			}
-		case *ast.CaseClause:
-			for _, expr := range p.List {
-				if expr == child {
-					return true
-				}
-			}
-		case *ast.ArrayType:
-			if p.Len == child {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func isBasicStringConst(obj *types.Const) bool {
-	typ := obj.Type()
-	// Exclude named types (type aliases) - they may be exported or have special semantics
-	if _, isNamed := typ.(*types.Named); isNamed {
-		return false
-	}
-	// Accept only basic string types (string or untyped string)
-	if basic, ok := typ.(*types.Basic); ok {
-		switch basic.Kind() {
-		case types.String, types.UntypedString:
-			return true
-		}
-	}
-	return false
-}
-
-func (tf *transformer) rewriteConstDecls(file *ast.File) {
-	if len(tf.constTransforms) == 0 {
-		return
-	}
-	var newDecls []ast.Decl
-	changed := false
-
-	for _, decl := range file.Decls {
-		gen, ok := decl.(*ast.GenDecl)
-		if !ok || gen.Tok != token.CONST {
-			newDecls = append(newDecls, decl)
-			continue
-		}
-
-		var keptSpecs []ast.Spec
-		var inserted []ast.Decl
-
-		for _, spec := range gen.Specs {
-			vs, ok := spec.(*ast.ValueSpec)
-			if !ok || len(vs.Names) == 0 {
-				keptSpecs = append(keptSpecs, spec)
-				continue
-			}
-			if len(vs.Values) != len(vs.Names) {
-				keptSpecs = append(keptSpecs, spec)
-				continue
-			}
-
-			var keptNames []*ast.Ident
-			var keptValues []ast.Expr
-
-			for idx, name := range vs.Names {
-				obj, ok := tf.info.Defs[name].(*types.Const)
-				if !ok {
-					keptNames = append(keptNames, name)
-					keptValues = append(keptValues, vs.Values[idx])
-					continue
-				}
-				transform, ok := tf.constTransforms[obj]
-				if !ok {
-					keptNames = append(keptNames, name)
-					keptValues = append(keptValues, vs.Values[idx])
-					continue
-				}
-				lit, ok := vs.Values[idx].(*ast.BasicLit)
-				if !ok || lit.Kind != token.STRING {
-					keptNames = append(keptNames, name)
-					keptValues = append(keptValues, vs.Values[idx])
-					continue
-				}
-
-				changed = true
-
-				varDoc := vs.Doc
-				if len(keptNames) > 0 {
-					varDoc = nil
-				} else {
-					vs.Doc = nil
-				}
-				varComment := vs.Comment
-				if varComment != nil {
-					vs.Comment = nil
-				}
-
-				varSpec := &ast.ValueSpec{
-					Doc:     varDoc,
-					Comment: varComment,
-					Names:   []*ast.Ident{name},
-					Values:  []ast.Expr{vs.Values[idx]},
-				}
-				varDecl := &ast.GenDecl{
-					Tok:   token.VAR,
-					Specs: []ast.Spec{varSpec},
-				}
-				if name.Pos().IsValid() {
-					varDecl.TokPos = name.Pos()
-				} else {
-					varDecl.TokPos = gen.TokPos
-				}
-				inserted = append(inserted, varDecl)
-
-				newType := obj.Type()
-				if basic, ok := newType.(*types.Basic); ok && basic.Kind() == types.UntypedString {
-					newType = types.Typ[types.String]
-				}
-				newVar := types.NewVar(obj.Pos(), obj.Pkg(), obj.Name(), newType)
-				tf.info.Defs[name] = newVar
-				transform.varObj = newVar
-				for _, use := range transform.uses {
-					tf.info.Uses[use] = newVar
-				}
-				transform.uses = nil
-			}
-
-			if len(keptNames) > 0 {
-				vs.Names = keptNames
-				if len(keptValues) > 0 {
-					vs.Values = keptValues
-				} else {
-					vs.Values = nil
-				}
-				keptSpecs = append(keptSpecs, vs)
-			}
-		}
-
-		if len(keptSpecs) > 0 {
-			gen.Specs = keptSpecs
-			newDecls = append(newDecls, gen)
-		}
-		if len(inserted) > 0 {
-			newDecls = append(newDecls, inserted...)
-		}
-	}
-
-	if changed {
-		file.Decls = newDecls
-	}
 }
 
 // transformDirectives rewrites //go:linkname toolchain directives in comments
@@ -1188,6 +823,7 @@ func (tf *transformer) processImportCfg(flags []string, requiredPkgs []string) (
 	// using for track required but not imported packages
 	var newIndirectImports map[string]bool
 	if requiredPkgs != nil {
+		log.Printf("DEBUG: processImportCfg called with %d requiredPkgs: %v", len(requiredPkgs), requiredPkgs)
 		newIndirectImports = make(map[string]bool)
 		for _, pkg := range requiredPkgs {
 			// unsafe is a special case, it's not a real dependency
@@ -1197,6 +833,7 @@ func (tf *transformer) processImportCfg(flags []string, requiredPkgs []string) (
 
 			newIndirectImports[pkg] = true
 		}
+		log.Printf("DEBUG: newIndirectImports has %d packages", len(newIndirectImports))
 	}
 
 	for line := range strings.SplitSeq(string(data), "\n") {
@@ -1274,12 +911,17 @@ func (tf *transformer) processImportCfg(flags []string, requiredPkgs []string) (
 		}
 
 		if len(newIndirectImports) > 0 {
-			return "", fmt.Errorf("cannot resolve required packages from action graph file: %v", requiredPkgs)
+			var unresolved []string
+			for pkg := range newIndirectImports {
+				unresolved = append(unresolved, pkg)
+			}
+			return "", fmt.Errorf("cannot resolve required packages: %v", unresolved)
 		}
 	}
 
 	for _, pair := range packagefiles {
 		impPath, pkgfile := pair[0], pair[1]
+
 		lpkg, err := listPackage(tf.curPkg, impPath)
 		if err != nil {
 			// TODO: it's unclear why an importcfg can include an import path
@@ -1293,6 +935,9 @@ func (tf *transformer) processImportCfg(flags []string, requiredPkgs []string) (
 			}
 			return "", err
 		}
+
+		// obfuscatedImportPath() returns the original path for non-obfuscated packages,
+		// and returns the hashed path for obfuscated packages.
 		impPath = lpkg.obfuscatedImportPath()
 		_, _ = fmt.Fprintf(newCfg, "packagefile %s=%s\n", impPath, pkgfile)
 	}
@@ -1324,7 +969,7 @@ func (tf *transformer) useAllImports(file *ast.File) {
 		pkgScope := pkgName.Imported().Scope()
 		var nameObj types.Object
 		for _, name := range pkgScope.Names() {
-			if obj := pkgScope.Lookup(name); obj.Exported() && isSafeForInstanceType(obj.Type()) {
+			if obj := pkgScope.Lookup(name); obj.Exported() && typesutil.IsSafeInstanceType(obj.Type()) {
 				nameObj = obj
 				break
 			}
@@ -1378,7 +1023,7 @@ func (tf *transformer) useAllImports(file *ast.File) {
 }
 
 // transformGoFile obfuscates the provided Go syntax file.
-func (tf *transformer) transformGoFile(file *ast.File) *ast.File {
+func (tf *transformer) transformGoFile(file *ast.File, filePath string) *ast.File {
 	// Only obfuscate the literals here if the flag is on
 	// and if the package in question is to be obfuscated.
 	//
@@ -1387,13 +1032,15 @@ func (tf *transformer) transformGoFile(file *ast.File) *ast.File {
 	// and that's not allowed in the runtime itself.
 	var litBuilder *literals.Builder
 	if flagLiterals && tf.curPkg.ToObfuscate {
-		litBuilder = literals.NewBuilder(tf.obfRand, file, randomName)
+		keyProvider := tf.newLiteralKeyProvider(filePath)
+		litBuilder = literals.NewBuilder(tf.obfRand, file, randomName, literals.BuilderConfig{KeyProvider: keyProvider})
 		file = litBuilder.ObfuscateFile(file, tf.info, tf.linkerVariableStrings)
 
 		// some imported constants might not be needed anymore, remove unnecessary imports
 		tf.useAllImports(file)
 	} else if len(tf.linkerVariableStrings) > 0 {
-		litBuilder = literals.NewBuilder(tf.obfRand, file, randomName)
+		keyProvider := tf.newLiteralKeyProvider(filePath)
+		litBuilder = literals.NewBuilder(tf.obfRand, file, randomName, literals.BuilderConfig{KeyProvider: keyProvider})
 	}
 
 	if litBuilder != nil {
@@ -1445,7 +1092,7 @@ func (tf *transformer) transformGoFile(file *ast.File) *ast.File {
 			//
 			// Alternatively, if we don't have an alias, we still want to
 			// use the embedded type, not the field.
-			tname := namedType(obj.Type())
+			tname := typesutil.NamedType(obj.Type())
 			if tname == nil {
 				return true // unnamed type (probably a basic type, e.g. int)
 			}
@@ -1551,7 +1198,7 @@ func (tf *transformer) transformGoFile(file *ast.File) *ast.File {
 			case "main", "init", "TestMain":
 				return true // don't break them
 			}
-			if strings.HasPrefix(name, "Test") && isTestSignature(sign) {
+			if strings.HasPrefix(name, "Test") && typesutil.IsTestSignature(sign) {
 				return true // don't break tests
 			}
 		default:
@@ -1594,6 +1241,45 @@ func (tf *transformer) transformGoFile(file *ast.File) *ast.File {
 	}
 
 	return astutil.Apply(file, pre, post).(*ast.File)
+}
+
+func (tf *transformer) newLiteralKeyProvider(filePath string) literals.KeyProvider {
+	master := seedHashInput()
+	if len(master) == 0 {
+		master = tf.curPkg.GarbleActionID[:]
+	}
+	pkgSalt := tf.curPkg.GarbleActionID[:]
+	fileID := tf.literalFileIdentifier(filePath)
+	return literals.NewHKDFKeyProvider(master, pkgSalt, fileID)
+}
+
+func (tf *transformer) literalFileIdentifier(path string) string {
+	if path == "" {
+		if tf.curPkg.ImportPath != "" {
+			return filepath.ToSlash(tf.curPkg.ImportPath)
+		}
+		return "unknown"
+	}
+	fileID := path
+	if tf.curPkg.Dir != "" {
+		if rel, err := filepath.Rel(tf.curPkg.Dir, path); err == nil && rel != "" && rel != "." {
+			fileID = rel
+		}
+	}
+	fileID = filepath.ToSlash(fileID)
+	if fileID == "" || fileID == "." {
+		base := filepath.Base(path)
+		if base != "" && base != "." {
+			fileID = filepath.ToSlash(base)
+		}
+	}
+	if fileID == "" || fileID == "." {
+		if tf.curPkg.ImportPath != "" {
+			return filepath.ToSlash(tf.curPkg.ImportPath)
+		}
+		return "unknown"
+	}
+	return fileID
 }
 
 func (tf *transformer) injectLinkerVariableInit(builder *literals.Builder, file *ast.File) {

@@ -1,6 +1,3 @@
-// Copyright (c) 2022, The Garble Authors.
-// See LICENSE for licensing information.
-
 package linker
 
 import (
@@ -24,7 +21,6 @@ import (
 )
 
 const (
-	MagicValueEnv  = "GARBLE_LINK_MAGIC"
 	TinyEnv        = "GARBLE_LINK_TINY"
 	FeistelSeedEnv = "LINK_SEED"              // Phase 2: Feistel seed (base64)
 	ReversibleEnv  = "GARBLE_LINK_REVERSIBLE" // Phase 2: Reversible mode flag

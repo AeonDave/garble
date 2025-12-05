@@ -1,6 +1,3 @@
-// Copyright (c) 2025, The Garble Authors.
-// See LICENSE for licensing information.
-
 package literals
 
 import (
@@ -11,6 +8,22 @@ import (
 	"testing"
 )
 
+func newTestKeyProvider() KeyProvider {
+	master := []byte("test-master-secret-0123456789abcd")
+	salt := []byte("test-package-salt-0123456789ab")
+	return NewHKDFKeyProvider(master, salt, "testfile.go")
+}
+
+func newTestContext(r *mathrand.Rand, nameProvider NameProviderFunc, helper *asconInlineHelper) *obfRand {
+	return &obfRand{
+		Rand:               r,
+		proxyDispatcher:    newProxyDispatcher(r, nameProvider),
+		asconHelper:        helper,
+		irreversibleHelper: newIrreversibleInlineHelper(r, nameProvider),
+		keyProvider:        newTestKeyProvider(),
+	}
+}
+
 // TestAsconObfuscator tests the ASCON obfuscator implementation
 func TestAsconObfuscator(t *testing.T) {
 	rand := mathrand.New(mathrand.NewSource(42))
@@ -20,7 +33,7 @@ func TestAsconObfuscator(t *testing.T) {
 	}
 
 	helper := newAsconInlineHelper(rand, nameProvider)
-	obf := newAsconObfuscator(helper)
+	obf := newAsconObfuscator(helper, newTestKeyProvider())
 
 	tests := []struct {
 		name string
@@ -59,8 +72,9 @@ func TestAsconObfuscator(t *testing.T) {
 				},
 			}
 
+			ctx := newTestContext(rand, nameProvider, helper)
 			// Obfuscate the data
-			block := obf.obfuscate(rand, tt.data, extKeys)
+			block := obf.obfuscate(ctx, tt.data, extKeys)
 
 			if block == nil {
 				t.Fatal("Obfuscator returned nil block")
@@ -122,7 +136,7 @@ func TestAsconObfuscatorIntegration(t *testing.T) {
 	}
 
 	helper := newAsconInlineHelper(rand, nameProvider)
-	obf := newAsconObfuscator(helper)
+	obf := newAsconObfuscator(helper, newTestKeyProvider())
 
 	testData := []byte("Integration test message")
 
@@ -137,7 +151,8 @@ func TestAsconObfuscatorIntegration(t *testing.T) {
 	}
 
 	// Obfuscate
-	block := obf.obfuscate(rand, testData, extKeys)
+	ctx := newTestContext(rand, nameProvider, helper)
+	block := obf.obfuscate(ctx, testData, extKeys)
 
 	// Verify block structure is valid
 	if block == nil || len(block.List) == 0 {
@@ -221,7 +236,7 @@ func BenchmarkAsconObfuscator(b *testing.B) {
 	}
 
 	helper := newAsconInlineHelper(rand, nameProvider)
-	obf := newAsconObfuscator(helper)
+	obf := newAsconObfuscator(helper, newTestKeyProvider())
 
 	testData := []byte("Benchmark test data for ASCON obfuscation")
 	extKeys := []*externalKey{
@@ -229,9 +244,10 @@ func BenchmarkAsconObfuscator(b *testing.B) {
 		{name: "k2", typ: "uint64", value: 0xABCDEF01, bits: 64},
 	}
 
+	ctx := newTestContext(rand, nameProvider, helper)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = obf.obfuscate(rand, testData, extKeys)
+		_ = obf.obfuscate(ctx, testData, extKeys)
 	}
 }
 
@@ -247,7 +263,7 @@ func BenchmarkAsconObfuscatorSizes(b *testing.B) {
 			}
 
 			helper := newAsconInlineHelper(rand, nameProvider)
-			obf := newAsconObfuscator(helper)
+			obf := newAsconObfuscator(helper, newTestKeyProvider())
 
 			testData := make([]byte, size)
 			for i := range testData {
@@ -258,9 +274,10 @@ func BenchmarkAsconObfuscatorSizes(b *testing.B) {
 				{name: "k1", typ: "uint32", value: 0x12345678, bits: 32},
 			}
 
+			ctx := newTestContext(rand, nameProvider, helper)
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_ = obf.obfuscate(rand, testData, extKeys)
+				_ = obf.obfuscate(ctx, testData, extKeys)
 			}
 		})
 	}

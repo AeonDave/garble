@@ -87,7 +87,16 @@ func (d *proxyDispatcher) initialize() {
 		}
 	}
 
-	d.flattenStructs = append(flattenStructs, root)
+	// Only include structs that are part of the tree (have a parent or are root)
+	// This prevents selecting orphaned structs that would generate invalid paths
+	var connected []*proxyStruct
+	connected = append(connected, root)
+	for _, s := range flattenStructs {
+		if s.parent != nil {
+			connected = append(connected, s)
+		}
+	}
+	d.flattenStructs = connected
 }
 
 // buildPath creates an AST expression that represents a field access path

@@ -1,12 +1,8 @@
-// Copyright (c) 2025, The Garble Authors.
-// See LICENSE for licensing information.
-
 package literals
 
 import (
 	"go/ast"
 	"go/token"
-	mathrand "math/rand"
 
 	ah "github.com/AeonDave/garble/internal/asthelper"
 )
@@ -15,20 +11,18 @@ import (
 // This provides strong cryptographic protection for literals without requiring any imports
 type asconObfuscator struct {
 	inlineHelper *asconInlineHelper
+	keys         KeyProvider
 }
 
 // obfuscate encrypts the data using ASCON-128 and generates decryption code
 // The entire ASCON implementation is inlined to avoid import dependencies
-func (a *asconObfuscator) obfuscate(obfRand *mathrand.Rand, data []byte, extKeys []*externalKey) *ast.BlockStmt {
+func (a *asconObfuscator) obfuscate(_ *obfRand, data []byte, extKeys []*externalKey) *ast.BlockStmt {
 	// Mark that ASCON obfuscation is being used
 	a.inlineHelper.used = true
 
-	// Generate random 16-byte key and nonce for this literal
-	key := make([]byte, 16)
-	obfRand.Read(key)
-
-	nonce := make([]byte, 16)
-	obfRand.Read(nonce)
+	key, nonce := a.keys.NextLiteralKeys()
+	key = append([]byte(nil), key...)
+	nonce = append([]byte(nil), nonce...)
 
 	// Apply external keys to the key material for additional obfuscation
 	// This makes each literal unique even with same plaintext
@@ -98,8 +92,12 @@ func (a *asconObfuscator) obfuscate(obfRand *mathrand.Rand, data []byte, extKeys
 }
 
 // newAsconObfuscator creates a new ASCON obfuscator with inline helper
-func newAsconObfuscator(inlineHelper *asconInlineHelper) obfuscator {
+func newAsconObfuscator(inlineHelper *asconInlineHelper, keys KeyProvider) obfuscator {
+	if keys == nil {
+		panic("literals: nil key provider for ASCON obfuscator")
+	}
 	return &asconObfuscator{
 		inlineHelper: inlineHelper,
+		keys:         keys,
 	}
 }

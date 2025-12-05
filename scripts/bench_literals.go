@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -131,11 +130,10 @@ func main() {
 		writeTestFile(tdir, name)
 	}
 
-	var packageToObfuscatorIndex []string
-	for i, obf := range literals.Obfuscators {
-		obfName := reflect.TypeOf(obf).Name()
+	var packageToStrategy []string
+	for _, obfName := range literals.RegisteredStrategyNames() {
 		writeTest(obfName)
-		packageToObfuscatorIndex = append(packageToObfuscatorIndex, fmt.Sprintf(packagePrefix+"%s=%d", obfName, i))
+		packageToStrategy = append(packageToStrategy, fmt.Sprintf(packagePrefix+"%s=%s", obfName, obfName))
 	}
 	writeTest("all")
 
@@ -145,7 +143,7 @@ func main() {
 	cmd.Env = append(cmd.Environ(),
 		// Explicitly specify package for obfuscation to avoid affecting testing package.
 		"GOGARBLE="+moduleName,
-		"GARBLE_TEST_LITERALS_OBFUSCATOR_MAP="+strings.Join(packageToObfuscatorIndex, ","),
+		"GARBLE_TEST_LITERALS_OBFUSCATOR_MAP="+strings.Join(packageToStrategy, ","),
 	)
 	cmd.Dir = tdir
 	cmd.Stdout = os.Stdout
