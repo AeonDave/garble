@@ -146,7 +146,9 @@ variant to ensure deterministic HKDF usage under concurrency.
   posture.
 - Keep `-reversible` off in production; only enable it when you need
   `garble reverse` for debugging.
-- Treat ASCON authentication failures as tampering indicators—the binary will
+- Packages with low-level compiler directives (for example `//go:nosplit`) skip
+  literal obfuscation; Garble logs the first triggering directive and position.
+- Treat ASCON authentication failures as tampering indicators-the binary will
   panic with a clear `garble: literal authentication failed` message.
 
 ## References

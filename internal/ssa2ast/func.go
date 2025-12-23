@@ -139,7 +139,21 @@ func isVoidType(typ types.Type) bool {
 }
 
 func isStringType(typ types.Type) bool {
-	return types.Identical(typ, types.Typ[types.String]) || types.Identical(typ, types.Typ[types.UntypedString])
+	basic, ok := types.Unalias(typ).Underlying().(*types.Basic)
+	if !ok {
+		return false
+	}
+	return basic.Info()&(types.IsString|types.IsUntyped) != 0
+}
+
+func isIndexableType(typ types.Type) bool {
+	switch t := types.Unalias(typ).Underlying().(type) {
+	case *types.Array, *types.Slice, *types.Map:
+		return true
+	case *types.Basic:
+		return t.Info()&(types.IsString|types.IsUntyped) != 0
+	}
+	return false
 }
 
 // isNillableType checks if a type can be assigned nil.
@@ -397,8 +411,8 @@ func (fc *funcConverter) ssaValue(ssaValue ssa.Value, explicitNil bool) (expr as
 				if err != nil {
 					return nil, err
 				}
-				// Generate zero value composite literal for non-nillable types
-				return &ast.CompositeLit{Type: typExpr}, nil
+				// Generate zero value for any type via *new(T) to avoid invalid composite literals.
+				return &ast.StarExpr{X: ah.CallExprByName("new", typExpr)}, nil
 			}
 
 			constExpr = ast.NewIdent("nil")
@@ -478,6 +492,21 @@ func (fc *funcConverter) tupleVarNameAndType(reg ssa.Value, idx int) (name strin
 func isNilValue(value ssa.Value) bool {
 	constVal, ok := value.(*ssa.Const)
 	return ok && constVal.Value == nil
+}
+
+func (fc *funcConverter) derefIndexableValue(val ssa.Value, expr ast.Expr) ast.Expr {
+	typ := types.Unalias(val.Type()).Underlying()
+	if isIndexableType(typ) {
+		if unary, ok := expr.(*ast.UnaryExpr); ok && unary.Op == token.AND {
+			return unary.X
+		}
+		return expr
+	}
+
+	if _, ok := typ.(*types.Pointer); !ok {
+		return expr
+	}
+	return &ast.ParenExpr{X: &ast.StarExpr{X: expr}}
 }
 
 func (fc *funcConverter) convertBlock(astFunc *AstFunc, ssaBlock *ssa.BasicBlock, astBlock *AstBlock) error {
@@ -641,6 +670,7 @@ func (fc *funcConverter) convertBlock(astFunc *AstFunc, ssaBlock *ssa.BasicBlock
 			if err != nil {
 				return err
 			}
+			xExpr = fc.derefIndexableValue(instr.X, xExpr)
 			indexExpr, err := fc.convertSsaValue(instr.Index)
 			if err != nil {
 				return err
@@ -651,6 +681,7 @@ func (fc *funcConverter) convertBlock(astFunc *AstFunc, ssaBlock *ssa.BasicBlock
 			if err != nil {
 				return err
 			}
+			xExpr = fc.derefIndexableValue(instr.X, xExpr)
 			indexExpr, err := fc.convertSsaValue(instr.Index)
 			if err != nil {
 				return err
@@ -661,6 +692,7 @@ func (fc *funcConverter) convertBlock(astFunc *AstFunc, ssaBlock *ssa.BasicBlock
 			if err != nil {
 				return err
 			}
+			mapExpr = fc.derefIndexableValue(instr.X, mapExpr)
 
 			indexExpr, err := fc.convertSsaValue(instr.Index)
 			if err != nil {
@@ -740,6 +772,7 @@ func (fc *funcConverter) convertBlock(astFunc *AstFunc, ssaBlock *ssa.BasicBlock
 			if err != nil {
 				return err
 			}
+			mapExpr = fc.derefIndexableValue(instr.Map, mapExpr)
 			keyExpr, err := fc.convertSsaValue(instr.Key)
 			if err != nil {
 				return err
@@ -826,7 +859,12 @@ func (fc *funcConverter) convertBlock(astFunc *AstFunc, ssaBlock *ssa.BasicBlock
 					},
 				}
 			} else {
-				makeIterExpr, nextType, err := makeMapIteratorPolyfill(fc.tc, instr.X.Type().(*types.Map))
+				xExpr = fc.derefIndexableValue(instr.X, xExpr)
+				mapType, ok := types.Unalias(instr.X.Type()).Underlying().(*types.Map)
+				if !ok {
+					return fmt.Errorf("range over non-map type %v: %w", instr.X.Type(), ErrUnsupported)
+				}
+				makeIterExpr, nextType, err := makeMapIteratorPolyfill(fc.tc, mapType)
 				if err != nil {
 					return err
 				}

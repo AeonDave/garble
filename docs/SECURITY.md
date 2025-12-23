@@ -344,6 +344,8 @@ for _, offset := range entryOffLocations {
 
 Transform string and numeric literals into encrypted or obfuscated expressions that resolve at runtime, preventing static extraction via tools like `strings` or `gostringungarbler`.
 
+Packages that include low-level compiler directives (e.g., `//go:nosplit`, `//go:noescape`) skip literal obfuscation to avoid unsafe runtime behavior. Garble logs the first triggering directive and position during the build.
+
 ### Architecture Overview
 
 Garble employs multiple obfuscation strategies selected randomly per literal for defense-in-depth:

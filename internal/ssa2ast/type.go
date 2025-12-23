@@ -10,11 +10,24 @@ import (
 )
 
 type TypeConverter struct {
-	resolver ImportNameResolver
+	resolver   ImportNameResolver
+	inProgress map[*types.Named]bool
 }
 
 func NewTypeConverted(resolver ImportNameResolver) *TypeConverter {
 	return &TypeConverter{resolver: resolver}
+}
+
+func (tc *TypeConverter) withNamedGuard(named *types.Named, fn func() (ast.Expr, error)) (ast.Expr, error) {
+	if tc.inProgress == nil {
+		tc.inProgress = make(map[*types.Named]bool)
+	}
+	if tc.inProgress[named] {
+		return nil, fmt.Errorf("recursive named type %v: %w", named, ErrUnsupported)
+	}
+	tc.inProgress[named] = true
+	defer delete(tc.inProgress, named)
+	return fn()
 }
 
 func (tc *TypeConverter) Convert(typ types.Type) (ast.Expr, error) {
@@ -103,7 +116,9 @@ func (tc *TypeConverter) Convert(typ types.Type) (ast.Expr, error) {
 		if parent := obj.Parent(); parent != nil {
 			isFuncScope := reflect.ValueOf(parent).Elem().FieldByName("isFunc")
 			if isFuncScope.Bool() {
-				return tc.Convert(obj.Type().Underlying())
+				return tc.withNamedGuard(typ, func() (ast.Expr, error) {
+					return tc.Convert(obj.Type().Underlying())
+				})
 			}
 		}
 
@@ -125,8 +140,10 @@ func (tc *TypeConverter) Convert(typ types.Type) (ast.Expr, error) {
 					}
 				}
 
-				fakeInterface := types.NewInterfaceType(methods, nil)
-				return tc.Convert(fakeInterface)
+				return tc.withNamedGuard(typ, func() (ast.Expr, error) {
+					fakeInterface := types.NewInterfaceType(methods, nil)
+					return tc.Convert(fakeInterface)
+				})
 			}
 			namedExpr = &ast.SelectorExpr{X: pkgIdent, Sel: ast.NewIdent(obj.Name())}
 		} else {
