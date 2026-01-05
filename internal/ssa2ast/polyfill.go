@@ -8,9 +8,9 @@ import (
 
 func makeMapIteratorPolyfill(tc *TypeConverter, mapType *types.Map) (ast.Expr, types.Type, error) {
 	nextType := types.NewSignatureType(nil, nil, nil, nil, types.NewTuple(
-		types.NewVar(token.NoPos, nil, "", types.Typ[types.Bool]),
-		types.NewVar(token.NoPos, nil, "", mapType.Key()),
-		types.NewVar(token.NoPos, nil, "", mapType.Elem()),
+		types.NewVar(tc.BasePos, nil, "", types.Typ[types.Bool]),
+		types.NewVar(tc.BasePos, nil, "", mapType.Key()),
+		types.NewVar(tc.BasePos, nil, "", mapType.Elem()),
 	), false)
 
 	keyParamExpr, err := tc.Convert(mapType.Key())

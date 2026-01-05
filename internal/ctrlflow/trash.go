@@ -221,12 +221,12 @@ type trashGenerator struct {
 	methodCache        map[types.Type][]*types.Func
 }
 
-func newTrashGenerator(ssaProg *ssa.Program, currentPkgPath string, importNameResolver ssa2ast.ImportNameResolver, rand *mathrand.Rand) *trashGenerator {
+func newTrashGenerator(ssaProg *ssa.Program, currentPkgPath string, importNameResolver ssa2ast.ImportNameResolver, basePos token.Pos, rand *mathrand.Rand) *trashGenerator {
 	t := &trashGenerator{
 		importNameResolver: importNameResolver,
 		currentPkgPath:     currentPkgPath,
 		rand:               rand,
-		typeConverter:      ssa2ast.NewTypeConverted(importNameResolver),
+		typeConverter:      &ssa2ast.TypeConverter{Resolver: importNameResolver, BasePos: basePos},
 		methodCache:        make(map[types.Type][]*types.Func),
 	}
 	t.initialize(ssaProg)

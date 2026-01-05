@@ -76,7 +76,7 @@ func Test_generateTrashBlock(t *testing.T) {
 			astutil.AddNamedImport(fset, file, name, pkg.Path())
 		}
 		return ast.NewIdent(name)
-	}, mathrand.New(mathrand.NewSource(seed)))
+	}, token.NoPos, mathrand.New(mathrand.NewSource(seed)))
 
 	predefinedArgs := make(map[string]types.Type)
 	for i := types.Bool; i < types.UnsafePointer; i++ {

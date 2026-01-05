@@ -241,7 +241,7 @@ func isFragilePackage(ssaPkg *ssa.Package, files []*ast.File) bool {
 		}
 	}
 
-	// 4. Skip packages with dangerous compiler directives that indicate low-level code.
+	// 3. Skip packages with dangerous compiler directives that indicate low-level code.
 	//    These may not tolerate control-flow transformations.
 	//    Safe directives like //go:build are allowed.
 	dangerousDirectives := []string{
@@ -499,6 +499,8 @@ func Obfuscate(fset *token.FileSet, ssaPkg *ssa.Package, files []*ast.File, obfR
 	// everywhere, which breaks type conversions like "error(nil)" into "error /*line :1*/ (nil)".
 	fset.AddFile(mergedFileName, int(newFile.Package), 1<<20)
 
+	funcConfig.BasePos = newFile.Package
+
 	// Reuse funcConfig from validation phase and set up ImportNameResolver
 	imports := make(map[string]string)
 	funcConfig.ImportNameResolver = func(pkg *types.Package) *ast.Ident {
@@ -533,7 +535,7 @@ func Obfuscate(fset *token.FileSet, ssaPkg *ssa.Package, files []*ast.File, obfR
 		// TEMPORARY: disable trash blocks due to SSA→AST converter limitations causing "undefined" errors
 		trashBlockCount = 0
 		if trashBlockCount > 0 && trashGen == nil {
-			trashGen = newTrashGenerator(ssaPkg.Prog, ssaPkg.Pkg.Path(), funcConfig.ImportNameResolver, obfRand)
+			trashGen = newTrashGenerator(ssaPkg.Prog, ssaPkg.Pkg.Path(), funcConfig.ImportNameResolver, funcConfig.BasePos, obfRand)
 		}
 
 		applyObfuscation := func(ssaFunc *ssa.Function) []dispatcherInfo {

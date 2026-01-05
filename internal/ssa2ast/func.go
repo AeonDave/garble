@@ -42,12 +42,16 @@ type ConverterConfig struct {
 	// MarkerInstrCallback is called every time a MarkerInstr instruction is encountered.
 	// Callback result is inserted into ast as is
 	MarkerInstrCallback func(vars map[string]types.Type) []ast.Stmt
+
+	// BasePos is the position to use for generated objects.
+	BasePos token.Pos
 }
 
 func DefaultConfig() *ConverterConfig {
 	return &ConverterConfig{
 		ImportNameResolver: defaultImportNameResolver,
 		NamePrefix:         "_s2a_",
+		BasePos:            token.NoPos,
 	}
 }
 
@@ -74,7 +78,7 @@ func Convert(ssaFunc *ssa.Function, cfg *ConverterConfig) (*ast.FuncDecl, error)
 func newFuncConverter(cfg *ConverterConfig) *funcConverter {
 	return &funcConverter{
 		importNameResolver:  cfg.ImportNameResolver,
-		tc:                  &TypeConverter{resolver: cfg.ImportNameResolver},
+		tc:                  &TypeConverter{Resolver: cfg.ImportNameResolver, BasePos: cfg.BasePos},
 		namePrefix:          cfg.NamePrefix,
 		valueNameMap:        make(map[ssa.Value]string),
 		ssaValueRemap:       cfg.SsaValueRemap,
@@ -1147,11 +1151,11 @@ func (fc *funcConverter) convertAnonFuncs(anonFuncs []*ssa.Function) ([]ast.Stmt
 
 		var closureVars []*types.Var
 		for _, freeVar := range anonFunc.FreeVars {
-			closureVars = append(closureVars, types.NewVar(token.NoPos, nil, freeVar.Name(), freeVar.Type()))
+			closureVars = append(closureVars, types.NewVar(fc.tc.BasePos, nil, freeVar.Name(), freeVar.Type()))
 		}
 
 		makeClosureType := types.NewSignatureType(nil, nil, nil, types.NewTuple(closureVars...), types.NewTuple(
-			types.NewVar(token.NoPos, nil, "", anonFunc.Signature),
+			types.NewVar(fc.tc.BasePos, nil, "", anonFunc.Signature),
 		), false)
 
 		makeClosureLit, err := fc.convertSignatureToFuncLit(makeClosureType)

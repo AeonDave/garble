@@ -10,12 +10,9 @@ import (
 )
 
 type TypeConverter struct {
-	resolver   ImportNameResolver
+	Resolver   ImportNameResolver
+	BasePos    token.Pos
 	inProgress map[*types.Named]bool
-}
-
-func NewTypeConverted(resolver ImportNameResolver) *TypeConverter {
-	return &TypeConverter{resolver: resolver}
 }
 
 func (tc *TypeConverter) withNamedGuard(named *types.Named, fn func() (ast.Expr, error)) (ast.Expr, error) {
@@ -46,7 +43,7 @@ func (tc *TypeConverter) Convert(typ types.Type) (ast.Expr, error) {
 		}, nil
 	case *types.Basic:
 		if typ.Kind() == types.UnsafePointer {
-			unsafePkgIdent := tc.resolver(types.Unsafe)
+			unsafePkgIdent := tc.Resolver(types.Unsafe)
 			if unsafePkgIdent == nil {
 				return nil, fmt.Errorf("cannot resolve unsafe package")
 			}
@@ -129,7 +126,7 @@ func (tc *TypeConverter) Convert(typ types.Type) (ast.Expr, error) {
 		}
 
 		var namedExpr ast.Expr
-		if pkgIdent := tc.resolver(obj.Pkg()); pkgIdent != nil {
+		if pkgIdent := tc.Resolver(obj.Pkg()); pkgIdent != nil {
 			// reference to unexported named emulated through new interface with explicit declarated methods
 			if !token.IsExported(obj.Name()) {
 				var methods []*types.Func

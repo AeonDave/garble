@@ -545,8 +545,18 @@ func (tf *transformer) applyControlFlowTransforms(files *[]*ast.File, paths *[]s
 		for _, file := range affectedFiles {
 			tf.removeUnusedImports(file)
 		}
-		if err := tf.typecheckParsedFiles(*files); err != nil {
-			log.Printf("garble: control-flow disabled for %s after typecheck failure: %v", tf.curPkg.ImportPath, err)
+		// Use defer/recover to catch panics during typecheck (e.g., from go/types during cross-compilation)
+		var typecheckErr error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					typecheckErr = fmt.Errorf("typecheck panic: %v", r)
+				}
+			}()
+			typecheckErr = tf.typecheckParsedFiles(*files)
+		}()
+		if typecheckErr != nil {
+			log.Printf("garble: control-flow disabled for %s after typecheck failure: %v", tf.curPkg.ImportPath, typecheckErr)
 			parsedFiles, parseErr := tf.parseCompileFiles(origPaths)
 			if parseErr != nil {
 				return nil, nil, parseErr

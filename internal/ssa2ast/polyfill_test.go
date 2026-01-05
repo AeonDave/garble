@@ -13,7 +13,7 @@ func TestMakeMapIteratorPolyfillDistinctTypeNodes(t *testing.T) {
 	valType := types.NewNamed(types.NewTypeName(token.NoPos, pkg, "Val", nil), types.Typ[types.Int], nil)
 	mapType := types.NewMap(keyType, valType)
 
-	tc := &TypeConverter{resolver: func(*types.Package) *ast.Ident { return nil }}
+	tc := &TypeConverter{Resolver: func(*types.Package) *ast.Ident { return nil }}
 	expr, _, err := makeMapIteratorPolyfill(tc, mapType)
 	if err != nil {
 		t.Fatalf("makeMapIteratorPolyfill error: %v", err)
