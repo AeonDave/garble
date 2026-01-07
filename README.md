@@ -255,6 +255,7 @@ Garble uses multiple obfuscation strategies for defense-in-depth:
 
 Notes and limits
 - String constants that must remain compile-time values (array lengths, `iota` math, `case` labels, etc.) are preserved to keep the program valid and may stay in plaintext.
+- Packages that include low-level directives like `//go:nosplit` or `//go:noescape` skip literal obfuscation; garble logs the skip to avoid unsafe runtime behavior.
 - Strings injected via `-ldflags=-X` are **fully protected**: the flag is sanitized at parse time, and the value is rehydrated as an obfuscated init-time assignment (ASCON-128 or multi-layer simple obfuscation).
 
 Dive into the full design (HKDF key derivation, obfuscator selection, and external key mixing) in [docs/LITERAL_ENCRYPTION.md](docs/LITERAL_ENCRYPTION.md).

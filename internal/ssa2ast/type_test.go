@@ -95,7 +95,7 @@ func TestTypeToExpr(t *testing.T) {
 	f, _, info, _ := mustParseAndTypeCheckFile(typesSrc)
 	name, structAst := findStruct(f, "exampleStruct")
 	obj := info.Defs[name]
-	fc := &TypeConverter{resolver: defaultImportNameResolver}
+	fc := &TypeConverter{Resolver: defaultImportNameResolver}
 	convAst, err := fc.Convert(obj.Type().Underlying())
 	qt.Assert(t, qt.IsNil(err))
 

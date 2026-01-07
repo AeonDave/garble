@@ -130,6 +130,7 @@ type transformer struct {
 
 	linkerInitInjected bool
 	constTransforms    map[*types.Const]*consts.Transform
+	skipLiterals       bool
 }
 
 type compileContext struct {
@@ -513,14 +514,7 @@ func (tf *transformer) applyControlFlowTransforms(files *[]*ast.File, paths *[]s
 		return nil, nil, nil
 	}
 
-	if sharedCache != nil && sharedCache.GoEnv.GOMOD != "" && tf.curPkg.Dir != "" {
-		modRoot := filepath.Dir(sharedCache.GoEnv.GOMOD)
-		if rel, err := filepath.Rel(modRoot, tf.curPkg.Dir); err == nil {
-			if strings.HasPrefix(rel, "..") || rel == ".." {
-				return nil, nil, nil
-			}
-		}
-	}
+	origPaths := append([]string(nil), (*paths)...)
 
 	mode := flagControlFlowMode
 	if tf.curPkg.Standard && mode != ctrlflow.ModeAnnotated {
@@ -549,10 +543,30 @@ func (tf *transformer) applyControlFlowTransforms(files *[]*ast.File, paths *[]s
 		*files = append(*files, newFile)
 		*paths = append(*paths, newFileName)
 		for _, file := range affectedFiles {
-			tf.useAllImports(file)
+			tf.removeUnusedImports(file)
 		}
-		if err := tf.typecheckParsedFiles(*files); err != nil {
-			return nil, nil, err
+		// Use defer/recover to catch panics during typecheck (e.g., from go/types during cross-compilation)
+		var typecheckErr error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					typecheckErr = fmt.Errorf("typecheck panic: %v", r)
+				}
+			}()
+			typecheckErr = tf.typecheckParsedFiles(*files)
+		}()
+		if typecheckErr != nil {
+			log.Printf("garble: control-flow disabled for %s after typecheck failure: %v", tf.curPkg.ImportPath, typecheckErr)
+			parsedFiles, parseErr := tf.parseCompileFiles(origPaths)
+			if parseErr != nil {
+				return nil, nil, parseErr
+			}
+			*files = parsedFiles
+			*paths = origPaths
+			if err := tf.typecheckParsedFiles(*files); err != nil {
+				return nil, nil, err
+			}
+			return nil, nil, nil
 		}
 		ssaPkg = ssaBuildPkg(tf.pkg, *files, tf.info)
 		for _, imp := range newFile.Imports {
@@ -576,7 +590,16 @@ func (tf *transformer) prepareObfuscationState(files []*ast.File, ssaPkg *ssa.Pa
 		return err
 	}
 	tf.fieldToStruct = typesutil.FieldToStruct(tf.info)
-	if flagLiterals && tf.curPkg.ToObfuscate {
+	directive, directivePos := findDangerousDirective(files)
+	tf.skipLiterals = flagLiterals && tf.curPkg.ToObfuscate && directive != ""
+	if tf.skipLiterals {
+		posStr := directivePos.String()
+		if posStr == "-" || posStr == "" {
+			posStr = "unknown position"
+		}
+		log.Printf("garble: literals disabled for %s; found %s at %s", tf.curPkg.ImportPath, directive, posStr)
+	}
+	if flagLiterals && tf.curPkg.ToObfuscate && !tf.skipLiterals {
 		tf.constTransforms = consts.ComputeTransforms(files, tf.info, tf.pkg)
 		if len(tf.constTransforms) > 0 {
 			for _, file := range files {
@@ -1022,6 +1045,89 @@ func (tf *transformer) useAllImports(file *ast.File) {
 	}
 }
 
+func (tf *transformer) removeUnusedImports(file *ast.File) {
+	if len(file.Imports) == 0 {
+		return
+	}
+
+	imports := make([]*ast.ImportSpec, len(file.Imports))
+	copy(imports, file.Imports)
+
+	for _, imp := range imports {
+		if imp == nil || imp.Path == nil {
+			continue
+		}
+		if imp.Name != nil && (imp.Name.Name == "_" || imp.Name.Name == ".") {
+			continue
+		}
+
+		path, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			continue
+		}
+
+		name := ""
+		if imp.Name != nil {
+			name = imp.Name.Name
+		} else {
+			if idx := strings.LastIndexByte(path, '/'); idx >= 0 {
+				name = path[idx+1:]
+			} else {
+				name = path
+			}
+		}
+
+		if name == "" || usesImportName(file, name) {
+			continue
+		}
+
+		if imp.Name != nil {
+			astutil.DeleteNamedImport(fset, file, imp.Name.Name, path)
+		} else {
+			astutil.DeleteImport(fset, file, path)
+		}
+	}
+}
+
+func usesImportName(file *ast.File, name string) bool {
+	used := false
+	ast.Inspect(file, func(n ast.Node) bool {
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if id, ok := sel.X.(*ast.Ident); ok && id.Name == name {
+			used = true
+			return false
+		}
+		return true
+	})
+	return used
+}
+
+func findDangerousDirective(files []*ast.File) (string, token.Position) {
+	dangerousDirectives := []string{
+		"//go:noinline",
+		"//go:noescape",
+		"//go:uintptrescapes",
+		"//go:nosplit",
+		"//go:norace",
+		"//go:cgo_",
+	}
+	for _, f := range files {
+		for _, cg := range f.Comments {
+			for _, c := range cg.List {
+				for _, dangerous := range dangerousDirectives {
+					if strings.HasPrefix(c.Text, dangerous) {
+						return dangerous, fset.Position(c.Slash)
+					}
+				}
+			}
+		}
+	}
+	return "", token.Position{}
+}
+
 // transformGoFile obfuscates the provided Go syntax file.
 func (tf *transformer) transformGoFile(file *ast.File, filePath string) *ast.File {
 	// Only obfuscate the literals here if the flag is on
@@ -1031,7 +1137,7 @@ func (tf *transformer) transformGoFile(file *ast.File, filePath string) *ast.Fil
 	// because obfuscated literals sometimes escape to heap,
 	// and that's not allowed in the runtime itself.
 	var litBuilder *literals.Builder
-	if flagLiterals && tf.curPkg.ToObfuscate {
+	if flagLiterals && tf.curPkg.ToObfuscate && !tf.skipLiterals {
 		keyProvider := tf.newLiteralKeyProvider(filePath)
 		litBuilder = literals.NewBuilder(tf.obfRand, file, randomName, literals.BuilderConfig{KeyProvider: keyProvider})
 		file = litBuilder.ObfuscateFile(file, tf.info, tf.linkerVariableStrings)
@@ -1063,7 +1169,16 @@ func (tf *transformer) transformGoFile(file *ast.File, filePath string) *ast.Fil
 			_, parentIsFile := cursor.Parent().(*ast.File)
 			if !isImplicit || parentIsFile {
 				// We only care about nil objects in the switch scenario below.
-				return true
+				// Fall back to types.Info.Types for type expressions in generated code.
+				if tv, ok := tf.info.Types[node]; ok && tv.IsType() {
+					if tname := typesutil.NamedType(tv.Type); tname != nil {
+						obj = tname
+					} else {
+						return true
+					}
+				} else {
+					return true
+				}
 			}
 			// In a type switch like "switch foo := bar.(type) {",
 			// "foo" is being declared as a symbolic variable,
@@ -1078,6 +1193,16 @@ func (tf *transformer) transformGoFile(file *ast.File, filePath string) *ast.Fil
 			// and we don't want to treat that "mypkg" as a variable,
 			// so avoid that case by checking the type of cursor.Parent.
 			obj = types.NewVar(node.Pos(), tf.pkg, name, nil)
+		}
+		if obj == nil {
+			if tv, ok := tf.info.Types[node]; ok && tv.IsType() {
+				if tname := typesutil.NamedType(tv.Type); tname != nil {
+					obj = tname
+				}
+			}
+		}
+		if obj == nil {
+			return true
 		}
 		pkg := obj.Pkg()
 		if vr, ok := obj.(*types.Var); ok && vr.Embedded() {

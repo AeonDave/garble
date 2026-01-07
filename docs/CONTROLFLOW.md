@@ -20,6 +20,8 @@ Control flow obfuscation works in several stages:
 7) Generates [trash blocks](#trash-blocks)
 8) Converts go/ssa back into go/ast
 
+If the post-transform typecheck fails for a package, Garble disables control-flow for that package and logs the reason, then continues the build with the original sources.
+
 ### Example usage
 
 ```shell

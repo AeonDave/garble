@@ -40,7 +40,7 @@ func (h *asconInlineHelper) generateInlineAsconCode() string {
 	return fmt.Sprintf(`
 // Inline ASCON-128 authenticated decryption
 func %s(key, nonce, ciphertextAndTag []byte) ([]byte, bool) {
-	%s := func(x uint64, n int) uint64 {
+	%s := func(x uint64, n uint) uint64 {
 		return (x >> n) | (x << (64 - n))
 	}
 	

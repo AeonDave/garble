@@ -10,11 +10,21 @@ import (
 )
 
 type TypeConverter struct {
-	resolver ImportNameResolver
+	Resolver   ImportNameResolver
+	BasePos    token.Pos
+	inProgress map[*types.Named]bool
 }
 
-func NewTypeConverted(resolver ImportNameResolver) *TypeConverter {
-	return &TypeConverter{resolver: resolver}
+func (tc *TypeConverter) withNamedGuard(named *types.Named, fn func() (ast.Expr, error)) (ast.Expr, error) {
+	if tc.inProgress == nil {
+		tc.inProgress = make(map[*types.Named]bool)
+	}
+	if tc.inProgress[named] {
+		return nil, fmt.Errorf("recursive named type %v: %w", named, ErrUnsupported)
+	}
+	tc.inProgress[named] = true
+	defer delete(tc.inProgress, named)
+	return fn()
 }
 
 func (tc *TypeConverter) Convert(typ types.Type) (ast.Expr, error) {
@@ -33,7 +43,7 @@ func (tc *TypeConverter) Convert(typ types.Type) (ast.Expr, error) {
 		}, nil
 	case *types.Basic:
 		if typ.Kind() == types.UnsafePointer {
-			unsafePkgIdent := tc.resolver(types.Unsafe)
+			unsafePkgIdent := tc.Resolver(types.Unsafe)
 			if unsafePkgIdent == nil {
 				return nil, fmt.Errorf("cannot resolve unsafe package")
 			}
@@ -103,7 +113,9 @@ func (tc *TypeConverter) Convert(typ types.Type) (ast.Expr, error) {
 		if parent := obj.Parent(); parent != nil {
 			isFuncScope := reflect.ValueOf(parent).Elem().FieldByName("isFunc")
 			if isFuncScope.Bool() {
-				return tc.Convert(obj.Type().Underlying())
+				return tc.withNamedGuard(typ, func() (ast.Expr, error) {
+					return tc.Convert(obj.Type().Underlying())
+				})
 			}
 		}
 
@@ -114,7 +126,7 @@ func (tc *TypeConverter) Convert(typ types.Type) (ast.Expr, error) {
 		}
 
 		var namedExpr ast.Expr
-		if pkgIdent := tc.resolver(obj.Pkg()); pkgIdent != nil {
+		if pkgIdent := tc.Resolver(obj.Pkg()); pkgIdent != nil {
 			// reference to unexported named emulated through new interface with explicit declarated methods
 			if !token.IsExported(obj.Name()) {
 				var methods []*types.Func
@@ -125,8 +137,10 @@ func (tc *TypeConverter) Convert(typ types.Type) (ast.Expr, error) {
 					}
 				}
 
-				fakeInterface := types.NewInterfaceType(methods, nil)
-				return tc.Convert(fakeInterface)
+				return tc.withNamedGuard(typ, func() (ast.Expr, error) {
+					fakeInterface := types.NewInterfaceType(methods, nil)
+					return tc.Convert(fakeInterface)
+				})
 			}
 			namedExpr = &ast.SelectorExpr{X: pkgIdent, Sel: ast.NewIdent(obj.Name())}
 		} else {

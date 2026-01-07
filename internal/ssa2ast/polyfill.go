@@ -7,20 +7,40 @@ import (
 )
 
 func makeMapIteratorPolyfill(tc *TypeConverter, mapType *types.Map) (ast.Expr, types.Type, error) {
-	keyTypeExpr, err := tc.Convert(mapType.Key())
-	if err != nil {
-		return nil, nil, err
-	}
-	valueTypeExpr, err := tc.Convert(mapType.Elem())
-	if err != nil {
-		return nil, nil, err
-	}
-
 	nextType := types.NewSignatureType(nil, nil, nil, nil, types.NewTuple(
-		types.NewVar(token.NoPos, nil, "", types.Typ[types.Bool]),
-		types.NewVar(token.NoPos, nil, "", mapType.Key()),
-		types.NewVar(token.NoPos, nil, "", mapType.Elem()),
+		types.NewVar(tc.BasePos, nil, "", types.Typ[types.Bool]),
+		types.NewVar(tc.BasePos, nil, "", mapType.Key()),
+		types.NewVar(tc.BasePos, nil, "", mapType.Elem()),
 	), false)
+
+	keyParamExpr, err := tc.Convert(mapType.Key())
+	if err != nil {
+		return nil, nil, err
+	}
+	valueParamExpr, err := tc.Convert(mapType.Elem())
+	if err != nil {
+		return nil, nil, err
+	}
+	resultKeyExpr, err := tc.Convert(mapType.Key())
+	if err != nil {
+		return nil, nil, err
+	}
+	resultValueExpr, err := tc.Convert(mapType.Elem())
+	if err != nil {
+		return nil, nil, err
+	}
+	sliceKeyExpr, err := tc.Convert(mapType.Key())
+	if err != nil {
+		return nil, nil, err
+	}
+	innerKeyExpr, err := tc.Convert(mapType.Key())
+	if err != nil {
+		return nil, nil, err
+	}
+	innerValueExpr, err := tc.Convert(mapType.Elem())
+	if err != nil {
+		return nil, nil, err
+	}
 
 	// Generated using https://github.com/lu4p/astextract from snippet:
 	/*
@@ -45,8 +65,8 @@ func makeMapIteratorPolyfill(tc *TypeConverter, mapType *types.Map) (ast.Expr, t
 			Params: &ast.FieldList{List: []*ast.Field{{
 				Names: []*ast.Ident{{Name: "m"}},
 				Type: &ast.MapType{
-					Key:   keyTypeExpr,
-					Value: valueTypeExpr,
+					Key:   keyParamExpr,
+					Value: valueParamExpr,
 				},
 			}}},
 			Results: &ast.FieldList{List: []*ast.Field{{
@@ -54,8 +74,8 @@ func makeMapIteratorPolyfill(tc *TypeConverter, mapType *types.Map) (ast.Expr, t
 					Params: &ast.FieldList{},
 					Results: &ast.FieldList{List: []*ast.Field{
 						{Type: &ast.Ident{Name: "bool"}},
-						{Type: keyTypeExpr},
-						{Type: valueTypeExpr},
+						{Type: resultKeyExpr},
+						{Type: resultValueExpr},
 					}},
 				},
 			}}},
@@ -69,7 +89,7 @@ func makeMapIteratorPolyfill(tc *TypeConverter, mapType *types.Map) (ast.Expr, t
 						&ast.CallExpr{
 							Fun: &ast.Ident{Name: "make"},
 							Args: []ast.Expr{
-								&ast.ArrayType{Elt: keyTypeExpr},
+								&ast.ArrayType{Elt: sliceKeyExpr},
 								&ast.BasicLit{Kind: token.INT, Value: "0"},
 								&ast.CallExpr{
 									Fun:  &ast.Ident{Name: "len"},
@@ -117,11 +137,11 @@ func makeMapIteratorPolyfill(tc *TypeConverter, mapType *types.Map) (ast.Expr, t
 								},
 								{
 									Names: []*ast.Ident{{Name: "k"}},
-									Type:  keyTypeExpr,
+									Type:  innerKeyExpr,
 								},
 								{
 									Names: []*ast.Ident{{Name: "r"}},
-									Type:  valueTypeExpr,
+									Type:  innerValueExpr,
 								},
 							}},
 						},
