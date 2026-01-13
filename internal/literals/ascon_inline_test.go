@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	mathrand "math/rand"
+	"strings"
 	"testing"
 )
 
@@ -75,6 +76,30 @@ func TestAsconInlineEncryption(t *testing.T) {
 
 			t.Logf("Generated expression for '%s'", tt.input)
 		})
+	}
+}
+
+func TestAsconInlineZeroizesAndGuards(t *testing.T) {
+	rand := mathrand.New(mathrand.NewSource(1))
+	nameProvider := func(r *mathrand.Rand, baseName string) string {
+		return baseName
+	}
+
+	helper := newAsconInlineHelper(rand, nameProvider)
+	code := helper.generateInlineAsconCode()
+
+	needles := []string{
+		"zero := func(b []byte)",
+		"zero(key)",
+		"zero(nonce)",
+		"zero(ciphertextAndTag)",
+		"zero(expectedTag)",
+		"uint(len(ciphertextAndTag))+1 == 0",
+	}
+	for _, needle := range needles {
+		if !strings.Contains(code, needle) {
+			t.Fatalf("expected inline code to contain %q", needle)
+		}
 	}
 }
 

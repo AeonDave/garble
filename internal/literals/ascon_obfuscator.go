@@ -3,6 +3,7 @@ package literals
 import (
 	"go/ast"
 	"go/token"
+	mathrand "math/rand"
 
 	ah "github.com/AeonDave/garble/internal/asthelper"
 )
@@ -16,7 +17,7 @@ type asconObfuscator struct {
 
 // obfuscate encrypts the data using ASCON-128 and generates decryption code
 // The entire ASCON implementation is inlined to avoid import dependencies
-func (a *asconObfuscator) obfuscate(_ *obfRand, data []byte, extKeys []*externalKey) *ast.BlockStmt {
+func (a *asconObfuscator) obfuscate(ctx *obfRand, data []byte, extKeys []*externalKey) *ast.BlockStmt {
 	// Mark that ASCON obfuscation is being used
 	a.inlineHelper.used = true
 
@@ -50,12 +51,24 @@ func (a *asconObfuscator) obfuscate(_ *obfRand, data []byte, extKeys []*external
 
 	// Generate the call to inline ASCON decrypt:
 	// data, ok := _garbleAsconDecrypt(key, nonce, ciphertextAndTag)
+	keyExpr := bytesToByteSliceLiteral(key)
+	nonceExpr := bytesToByteSliceLiteral(nonce)
+	cipherExpr := bytesToByteSliceLiteral(ciphertextAndTag)
+
+	// Add an extra obfuscation layer to the embedded key/nonce/ciphertext.
+	// This keeps ASCON as the cryptographic layer while avoiding raw byte arrays
+	// in the binary for these materials.
+	if ctx != nil && ctx.Rand != nil {
+		keyExpr = dataToInterleavedByteSlice(ctx.Rand, append([]byte(nil), key...), extKeys)
+		nonceExpr = dataToInterleavedByteSlice(ctx.Rand, append([]byte(nil), nonce...), extKeys)
+		cipherExpr = dataToInterleavedByteSlice(ctx.Rand, append([]byte(nil), ciphertextAndTag...), extKeys)
+	}
 	decryptCall := &ast.CallExpr{
 		Fun: ast.NewIdent(a.inlineHelper.funcName),
 		Args: []ast.Expr{
-			bytesToByteSliceLiteral(key),
-			bytesToByteSliceLiteral(nonce),
-			bytesToByteSliceLiteral(ciphertextAndTag),
+			keyExpr,
+			nonceExpr,
+			cipherExpr,
 		},
 	}
 
@@ -71,6 +84,15 @@ func (a *asconObfuscator) obfuscate(_ *obfRand, data []byte, extKeys []*external
 
 	// Authentication check: if !ok { panic("garble: ASCON authentication failed") }
 	// This should never happen in normal execution, but provides a safety check
+	var panicRand *mathrand.Rand
+	if ctx != nil {
+		panicRand = ctx.Rand
+	}
+	panicMsgBytes := dataToInterleavedByteSlice(panicRand, []byte("garble: literal authentication failed"), extKeys)
+	panicMsg := &ast.CallExpr{
+		Fun:  ast.NewIdent("string"),
+		Args: []ast.Expr{panicMsgBytes},
+	}
 	block.List = append(block.List, &ast.IfStmt{
 		Cond: &ast.UnaryExpr{
 			Op: token.NOT,
@@ -79,10 +101,7 @@ func (a *asconObfuscator) obfuscate(_ *obfRand, data []byte, extKeys []*external
 		Body: ah.BlockStmt(
 			&ast.ExprStmt{
 				X: ah.CallExprByName("panic",
-					&ast.BasicLit{
-						Kind:  token.STRING,
-						Value: `"garble: literal authentication failed"`,
-					},
+					panicMsg,
 				),
 			},
 		),

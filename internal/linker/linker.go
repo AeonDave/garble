@@ -22,8 +22,7 @@ import (
 
 const (
 	TinyEnv        = "GARBLE_LINK_TINY"
-	FeistelSeedEnv = "LINK_SEED"              // Phase 2: Feistel seed (base64)
-	ReversibleEnv  = "GARBLE_LINK_REVERSIBLE" // Phase 2: Reversible mode flag
+	FeistelSeedEnv = "LINK_SEED" // Phase 2: Feistel seed (base64)
 )
 
 //go:embed patches/*/*.patch

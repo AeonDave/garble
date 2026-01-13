@@ -8,15 +8,6 @@ cmp stdout main.stdout
 
 [short] stop # no need to verify this with -short
 
-# Ensure that reversing works with cgo.
-env GARBLE_TEST_REVERSING=true
-exec ./main
-cp stdout reversing.stdout
-stdin reversing.stdout
-exec garble reverse .
-cmp stdout reversed.stdout
-env GARBLE_TEST_REVERSING=false
-
 exec garble -tiny build
 exec ./main
 cmp stdout main.stdout
@@ -47,27 +38,14 @@ func main() {
 -- imported/imported_regular.go --
 package imported
 
-import (
-	"fmt"
-	"os"
-	"runtime"
-)
-
-func RegularFunc() {
-	if os.Getenv("GARBLE_TEST_REVERSING") == "true" {
-		_, filename, _, _ := runtime.Caller(0)
-		fmt.Println("regular filename:", filename)
-	}
-}
+func RegularFunc() {}
 
 -- cgo_main.go --
 package main
 
 import (
 	"fmt"
-	"os"
 	"os/user"
-	"runtime"
 )
 
 /*
@@ -103,11 +81,6 @@ func cgoFunc() {
 //export goCallback
 func goCallback() {
 	fmt.Println("go callback")
-	// TODO: support reversing filenames in cgo files
-	if false && os.Getenv("GARBLE_TEST_REVERSING") == "true" {
-		_, filename, _, _ := runtime.Caller(0)
-		fmt.Println("cgo filename:", filename)
-	}
 }
 
 //export printString
@@ -126,13 +99,6 @@ void separateFunction() {
 	printString("string from C");
 }
 -- main.stdout --
-3
-true
-go callback
-go callback
-string from C
--- reversed.stdout --
-regular filename: test/main/imported/imported_regular.go
 3
 true
 go callback

@@ -11,6 +11,10 @@ env DEFAULT_NONCE=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 env NONCE_ALT=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
 env GARBLE_BUILD_NONCE=${DEFAULT_NONCE}
 
+# Default seed is random per build, but only printed when -seed=random is used.
+exec garble build -v
+! stderr '^-seed chosen at random: .+'
+
 # Check the binary with a given base64 encoded seed.
 exec garble -seed=${SEED1} build
 exec ./main$exe

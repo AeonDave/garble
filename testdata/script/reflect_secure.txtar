@@ -1,4 +1,4 @@
-# Test reflection without -reversible flag (secure mode - default)
+# Test reflection default mode (secure mode)
 # Names should be obfuscated, no name mapping in binary
 
 exec garble build

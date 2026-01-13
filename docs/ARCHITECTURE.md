@@ -116,13 +116,13 @@ This fork (AeonDave/garble) introduces several improvements compared to `burrowe
 │  │  │  • Junk jumps  │  │  func metadata  │            │   │
 │  │  │  • Trash       │  │  encrypt/decrypt│            │   │
 │  │  └────────────────┘  └─────────────────┘            │   │
-│  │  ┌────────────────┐  ┌─────────────────┐            │   │
-│  │  │ Runtime Patch  │  │   Reverse       │            │   │
-│  │  │ (runtime_patch)│  │  (reverse.go)   │            │   │
-│  │  │                │  │                 │            │   │
-│  │  │ Inject helpers │  │  De-obfuscate   │            │   │
-│  │  │ for Feistel    │  │  stack traces   │            │   │
-│  │  └────────────────┘  └─────────────────┘            │   │
+│  │  ┌────────────────┐                                   │   │
+│  │  │ Runtime Patch  │                                   │   │
+│  │  │ (runtime_patch)│                                   │   │
+│  │  │                │                                   │   │
+│  │  │ Inject helpers │                                   │   │
+│  │  │ for Feistel    │                                   │   │
+│  │  └────────────────┘                                   │   │
 │  └─────────────────────────────────────────────────────┘   │
 │                     │                                      │
 │                     ▼                                      │
@@ -141,7 +141,7 @@ This fork (AeonDave/garble) introduces several improvements compared to `burrowe
 │  ┌───────────────────────────────────────────────────────────┐  │
 │  │  CLI & Orchestration Layer (main.go)                      │  │
 │  │  • Argument parsing & validation                          │  │
-│  │  • Command dispatch (build/test/run/reverse)              │  │
+│  │  • Command dispatch (build/test/run)                      │  │
 │  │  • Environment & flag management                          │  │
 │  └───────────────────────────────────────────────────────────┘  │
 │                         │                                       │
@@ -195,17 +195,16 @@ Responsibilities:
 - Parse CLI flags
 - Generate and combine seed and nonce
 - Setup environment (GARBLE_SHARED, temp directories)
-- Dispatch commands (build/test/run/reverse)
+- Dispatch commands (build/test/run)
 
 Main flags:
 
 ```go
--seed=<base64>          // Deterministic seed for reproducible builds
+-seed=<base64|random>   // Seed for reproducible builds; random per build by default
 -literals               // Enable literal obfuscation
 -tiny                   // Remove extra info (panic messages, etc.)
 -controlflow            // Enable control flow obfuscation
 -debugdir               // Directory for debug output
--reversible             // Keep mappings for reverse analysis
 -no-cache-encrypt       // Disable cache encryption (default: ON)
 ```
 
@@ -274,7 +273,7 @@ Primary transformations:
 1. Name obfuscation: apply `hashWith()` to identifiers
 2. Import path rewriting: rewrite import paths as needed
 3. Position removal: zero out token.Pos to strip original positions
-4. Reflection handling: remove original names unless `-reversible` is set
+4. Reflection handling: never embed original names (reflection map stays empty)
 
 ### 3.4 Cache layer (cache_*.go)
 
@@ -349,9 +348,9 @@ Obfuscator types:
    - Encrypts literals with ASCON-128
    - Injects inline decryption code
 
-2. Simple obfuscator (lighter, reversible)
-   - XOR + shuffle + swap
-   - No crypto, reversible
+2. Simple obfuscator (lighter, irreversible)
+   - S-box + Feistel + external key mixing
+   - No de-obfuscation metadata emitted
 
 3. Split obfuscator
    - Splits a string into chunks and reconstructs it at runtime
@@ -364,13 +363,13 @@ Obfuscator selection:
 ```
 Literal size < 2KB?
     ├─ Yes → ASCON, Simple, Split, Swap (random choice)
-    └─ No  → Simple only (for performance)
+    └─ No  → ASCON or linear-time obfuscators (random choice)
 ```
 
 Constant pre-processing (in transformer.go):
 - `computeConstTransforms` builds a map `*types.Const → constTransform` by tracking all `Ident` usages and excluding exported constants, type aliases, or constants constrained by constant contexts.
 - `rewriteConstDecls` rewrites eligible `GenDecl` `const` declarations to `var`, updating `types.Info.Defs` and `types.Info.Uses` so obfuscators operate on runtime variables.
-- Converted constants keep original doc and trailing comments to preserve documentation for `-debugdir` and reverse mode.
+- Converted constants keep original doc and trailing comments to preserve documentation for `-debugdir`.
 
 Sanitizing `-ldflags -X` (main.go → transformer.go):
 - `sanitizeLinkerFlags()` intercepts `-ldflags` before they reach the Go toolchain
@@ -421,7 +420,7 @@ func skipThis() { ... }
 Runtime patches for Go:
 - Inject helper functions for Feistel decryption
 - Patch runtime.funcname() to decrypt names on the fly
-- Handle reflection compatibility when `-reversible` is enabled
+- Keep reflection name mapping empty to avoid leaking identifiers
 
 ---
 
@@ -490,25 +489,6 @@ Runtime patches for Go:
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### 4.2 Reverse flow (de-obfuscation)
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│  garble reverse ./cmd/app stack-trace.txt                    │
-├──────────────────────────────────────────────────────────────┤
-│  1. Parse flags (must match original build flags!)           │
-│  2. Regenerate same seed/nonce combination                   │
-│  3. Run "go list" to re-populate cache                      │
-│  4. For each obfuscated name in stack trace:                 │
-│     ├─ Recompute hash with same seed                         │
-│     ├─ Match against known package names                     │
-│     └─ Replace with original name                            │
-│  5. Output de-obfuscated stack trace                         │
-└──────────────────────────────────────────────────────────────┘
-```
-
----
-
 ## 5. Obfuscation mechanisms
 
 ### 5.1 Name obfuscation
@@ -553,10 +533,10 @@ Step 2: Encrypt with ASCON-128
 Step 3: Inject inline decryption
     Obfuscated Code:
     func() string {
-        key := [16]byte{...}  // embedded key
-        nonce := [16]byte{...}
-        ct := []byte{...}     // ciphertext
-        pt := asconDecrypt(key, nonce, ct)
+        key := interleave(evenKey, oddKey)    // embedded, split
+        nonce := interleave(evenNonce, oddNonce)
+        ct := interleave(evenCt, oddCt)       // ciphertext
+        pt := asconDecrypt(key, nonce, ct)    // zeroizes key/nonce/ct internally
         return string(pt)
     }()
 ```
@@ -565,6 +545,7 @@ Characteristics:
 - Each literal has a unique key and nonce
 - Runtime decryption overhead: ~1–2 µs per literal
 - No plaintext leakage (AEAD provides authentication)
+- Key/nonce/ciphertext are interleaved at build time and zeroized after decrypt
 
 ### 5.3 Feistel cipher for metadata
 
@@ -590,7 +571,7 @@ Obfuscation:
 
 Properties:
 - Format-preserving: the encrypted value has the same size as the original
-- Reversible: deterministic decryption with the same keys
+- Deterministic runtime decryption with the same keys
 - Overhead: ~10 ns per decryption (4 rounds)
 
 ### 5.4 Control flow obfuscation (Complex mode)
@@ -710,12 +691,11 @@ case 4:  // Dead code, never reached
 2. Testing:
    - Unit tests: ~85% coverage
    - Integration tests: cache encryption, control flow, literals
-   - Fuzz tests: directive parsing, reverse logic
+   - Fuzz tests: directive parsing, literal obfuscation
 
 3. Debugging:
    - `-debugdir` flag to inspect obfuscated source
    - Detailed logging via `log.SetPrefix("[garble]")`
-   - `garble reverse` command for de-obfuscation of stack traces
 
 ### 6.5 Extensibility
 

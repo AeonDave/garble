@@ -294,6 +294,11 @@ Parameter: `flatten_hardening` (default: empty, supported: `xor,delegate_table`)
 
 Dispatcher is the main and most vulnerable part of control flow flattening. By static analysis of the dispatcher, it is possible to reconstruct the original control flow ([example](https://research.openanalysis.net/angr/symbolic%20execution/deobfuscation/research/2022/03/26/angr_notes.html)). Hardening can be used to make this analysis more difficult by adding an extra layer of obfuscation and moving some of the computation to runtime
 
+Additional hardening details:
+- Key material is embedded via interleaved slices (no raw byte arrays).
+- Prologues add opaque predicates to slow static recovery of dispatcher logic.
+Consequence: minor extra init-time work and a small code size increase when hardening is enabled.
+
 Input:
 ```go
 //garble:controlflow flatten_passes=1 junk_jumps=0 block_splits=0 flatten_hardening=xor,delegate_table
@@ -318,6 +323,9 @@ func main() {
 ```
 
 Result:
+
+> Note: Actual output uses interleaved `[]byte` slices and an opaque predicate;
+> the snippet below is simplified for readability.
 
 ```go
 var _garble2ec9r7n6t4d7f = (func(key [15]byte) [4]func(int) int {

@@ -256,23 +256,11 @@ func TestCacheEncryptionSeedSelection(t *testing.T) {
 	cacheEncryptWarnWriter = io.Discard
 	cacheEncryptWarnOnce = sync.Once{}
 
-	// Case 4: Build nonce fallback is automatic when encryption stays enabled
-	fallbackNonce := []byte("nonce-for-fallback")
-	sharedCache = &sharedCacheType{BuildNonce: fallbackNonce}
-	flagSeed = seedFlag{}
-	got, fallback := cacheEncryptionSeed()
-	if !fallback {
-		t.Fatalf("expected fallback flag when using build nonce")
-	}
-	expected := combineSeedAndNonce(nil, fallbackNonce)
-	if !bytes.Equal(got, expected) {
-		t.Fatalf("expected fallback seed %x, got %x", expected, got)
-	}
-
-	// Case 5: No build nonce or seed -> nil result with warning
+	// Case 4: No seed -> nil result with warning
 	sharedCache = &sharedCacheType{}
+	flagSeed = seedFlag{}
 	cacheEncryptWarnOnce = sync.Once{}
-	got, fallback = cacheEncryptionSeed()
+	got, fallback := cacheEncryptionSeed()
 	if got != nil || fallback {
 		t.Fatalf("expected nil when no seeds available, got %x (fallback=%v)", got, fallback)
 	}

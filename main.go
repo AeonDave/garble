@@ -33,7 +33,6 @@ import (
 	"github.com/AeonDave/garble/internal/ctrlflow"
 	"github.com/AeonDave/garble/internal/ldflags"
 	"github.com/AeonDave/garble/internal/linker"
-	"github.com/AeonDave/garble/internal/literals"
 )
 
 const actionGraphFileName = "action-graph.json"
@@ -106,20 +105,18 @@ var booleanFlags = map[string]bool{
 }
 
 var flagSet = flag.NewFlagSet("garble", flag.ExitOnError)
-var rxGarbleFlag = regexp.MustCompile(`-(?:literals|tiny|debug|debugdir|seed|reversible|controlflow|cache-encrypt-nonce)(?:$|=)`)
+var rxGarbleFlag = regexp.MustCompile(`-(?:literals|tiny|debug|debugdir|seed|controlflow)(?:$|=)`)
 
 var (
-	flagLiterals                  bool
-	flagTiny                      bool
-	flagDebug                     bool
-	flagDebugDir                  string
-	flagSeed                      seedFlag
-	flagReversible                bool
-	flagCacheEncrypt              = true // Default ON for security
-	flagCacheEncryptNonceFallback bool
-	buildNonceRandom              bool
-	flagControlFlowMode           = ctrlflow.ModeOff
-	controlFlowFlagValue          = controlFlowFlag{mode: ctrlflow.ModeOff}
+	flagLiterals         bool
+	flagTiny             bool
+	flagDebug            bool
+	flagDebugDir         string
+	flagSeed             seedFlag
+	flagCacheEncrypt     = true // Default ON for security
+	buildNonceRandom     bool
+	flagControlFlowMode  = ctrlflow.ModeOff
+	controlFlowFlagValue = controlFlowFlag{mode: ctrlflow.ModeOff}
 
 	// Presumably OK to share fset across packages.
 	fset = token.NewFileSet()
@@ -132,16 +129,14 @@ var requestedOutputPath string
 func init() {
 	flagSet.Usage = usage
 	flagSet.BoolVar(&flagLiterals, "literals", false, "Obfuscate literals such as strings")
-	flagSet.BoolVar(&flagTiny, "tiny", false, "Optimize for binary size, losing some ability to reverse the process")
+	flagSet.BoolVar(&flagTiny, "tiny", false, "Optimize for binary size with some obfuscation trade-offs")
 	flagSet.BoolVar(&flagDebug, "debug", false, "Print debug logs to stderr")
 	flagSet.StringVar(&flagDebugDir, "debugdir", "", "Write the obfuscated source to a directory, e.g. -debugdir=out")
-	flagSet.Var(&flagSeed, "seed", "Provide a base64-encoded seed, e.g. -seed=o9WDTZ4CN4w\nFor a random seed, provide -seed=random")
-	flagSet.BoolVar(&flagReversible, "reversible", false, "Enable reversible obfuscation (weaker security but supports garble reverse and debugging)")
+	flagSet.Var(&flagSeed, "seed", "Provide a base64-encoded seed, e.g. -seed=o9WDTZ4CN4w\nRandom seed is the default; use -seed=random to print it")
 	flagSet.Var(&controlFlowFlagValue, "controlflow", "Control-flow obfuscation scope: off, directives, auto, all")
 
 	var noCacheEncrypt bool
 	flagSet.BoolVar(&noCacheEncrypt, "no-cache-encrypt", false, "Disable cache encryption (not recommended for production)")
-	flagSet.BoolVar(&flagCacheEncryptNonceFallback, "cache-encrypt-nonce", false, "Encrypt cache using the build nonce when no seed is provided (per-build cache entries)")
 }
 
 //goland:noinspection GoUnhandledErrorResult
@@ -216,13 +211,19 @@ func main() {
 		os.Exit(2)
 	}
 
-	// If a random seed was used, emit it so the build can be reproduced.\n	// (The per-build nonce is printed earlier when it was generated at random.)
-	if flagSeed.random {
-		_, _ = fmt.Fprintf(os.Stderr, "-seed chosen at random: %s\n", flagSeed.String())
+	command := args[0]
+	if !flagSeed.present() && (command == "build" || command == "test" || command == "run") {
+		if err := flagSeed.setRandom(false); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	}
 
-	// Configure literal obfuscation mode based on -reversible flag
-	literals.SetReversibleMode(flagReversible)
+	// If a random seed was explicitly requested, emit it so the build can be reproduced.
+	// (The per-build nonce is printed earlier when it was generated at random.)
+	if flagSeed.random && flagSeed.explicit {
+		_, _ = fmt.Fprintf(os.Stderr, "-seed chosen at random: %s\n", flagSeed.String())
+	}
 
 	if err := mainErr(args); err != nil {
 		var code errJustExit
@@ -289,8 +290,6 @@ func mainErr(args []string) error {
 			fmt.Printf("%16s %s\n", setting.Key, setting.Value)
 		}
 		return nil
-	case "reverse":
-		return commandReverse(args)
 	case "build", "test", "run":
 		cmd, err := toolexecCmd(command, args)
 		defer func() {
@@ -369,13 +368,6 @@ func mainErr(args []string) error {
 			// Phase 2: Feistel encryption (runtime will use this instead of XOR)
 			seed := feistelSeed()
 			_ = os.Setenv(linker.FeistelSeedEnv, base64.StdEncoding.EncodeToString(seed))
-
-			// Pass reversible flag to linker
-			if flagReversible {
-				_ = os.Setenv(linker.ReversibleEnv, "true")
-			} else {
-				_ = os.Setenv(linker.ReversibleEnv, "false")
-			}
 
 			if flagTiny {
 				_ = os.Setenv(linker.TinyEnv, "true")
@@ -604,9 +596,10 @@ func resolveControlFlowMode() error {
 }
 
 type seedFlag struct {
-	random bool
-	raw    []byte
-	bytes  []byte
+	random   bool
+	explicit bool
+	raw      []byte
+	bytes    []byte
 }
 
 func (f seedFlag) present() bool { return len(f.bytes) > 0 }
@@ -621,17 +614,11 @@ func (f seedFlag) String() string {
 
 func (f *seedFlag) Set(s string) error {
 	f.random = false
+	f.explicit = true
 	f.raw = nil
 	f.bytes = nil
 	if s == "random" {
-		buf := make([]byte, 32)
-		if _, err := cryptorand.Read(buf); err != nil {
-			return fmt.Errorf("error generating random seed: %v", err)
-		}
-		f.random = true
-		f.raw = buf
-		f.bytes = deriveSeedEntropy(buf)
-		return nil
+		return f.setRandom(true)
 	}
 
 	s = strings.TrimRight(s, "=")
@@ -641,6 +628,18 @@ func (f *seedFlag) Set(s string) error {
 	}
 	f.raw = seed
 	f.bytes = deriveSeedEntropy(seed)
+	return nil
+}
+
+func (f *seedFlag) setRandom(explicit bool) error {
+	buf := make([]byte, 32)
+	if _, err := cryptorand.Read(buf); err != nil {
+		return fmt.Errorf("error generating random seed: %v", err)
+	}
+	f.random = true
+	f.explicit = explicit
+	f.raw = buf
+	f.bytes = deriveSeedEntropy(buf)
 	return nil
 }
 
@@ -804,12 +803,11 @@ Similarly, to combine garble flags and Go build flags:
 
 	garble -literals build -tags=purego ./cmd/foo
 
-The following commands are supported:
+	The following commands are supported:
 
 	build          replace "go build"
 	test           replace "go test"
 	run            replace "go run"
-	reverse        de-obfuscate output such as stack traces
 	version        print the version and build settings of the garble binary
 
 To learn more about a command, run "garble help <command>".

@@ -1,11 +1,12 @@
 # Ensure that "does not match any packages" works.
+env SEED=OQg9kACEECQ
 env GOGARBLE=match-absolutely/nothing
-! exec garble build -o=main$exe ./standalone
+! exec garble -seed=${SEED} build -o=main$exe ./standalone
 stderr '^GOGARBLE="match-absolutely/nothing" does not match any packages to be built$'
 
 # A build where just some packages are obfuscated.
 env GOGARBLE=test/main/imported
-exec garble -literals build -o=main$exe ./importer
+exec garble -seed=${SEED} -literals build -o=main$exe ./importer
 
 ! binsubstr main$exe 'some long string to obfuscate'
 binsubstr main$exe 'some long string to not obfuscate'
@@ -14,7 +15,7 @@ binsubstr main$exe 'some long string to not obfuscate'
 # Some of the imported std packages use "import maps" due to vendoring,
 # and a past bug made this case fail for "garble build".
 env GOGARBLE=test/main
-exec garble build -o=main$exe ./stdimporter
+exec garble -seed=${SEED} build -o=main$exe ./stdimporter
 
 [short] stop # rebuilding std is slow
 
@@ -28,13 +29,13 @@ env GOGARBLE='*'
 # packages so we must properly support ImportMap.
 # Plus, some packages like net make heavy use of complex features like Cgo.
 # Note that we won't obfuscate a few std packages just yet, mainly those around runtime.
-exec garble build std
+exec garble -seed=${SEED} build std
 ! stderr . # no warnings
 
 # Link a binary importing net/http, which will catch whether or not we
 # support ImportMap when linking.
 # Also ensure we are obfuscating low-level std packages.
-exec garble build -o=main$exe ./stdimporter
+exec garble -seed=${SEED} build -o=main$exe ./stdimporter
 ! stderr . # no warnings
 ! binsubstr main$exe 'http.ListenAndServe' 'debug.WriteHeapDump' 'time.Now' 'syscall.Listen'
 
@@ -54,8 +55,8 @@ binsubstr main_regular$exe 'http.ListenAndServe' 'debug.WriteHeapDump' 'time.Now
 # due to its use of linknames pointing at std packages it doesn't depend upon.
 [darwin] skip 'see https://github.com/burrowers/garble/issues/609'
 env GOCACHE=${WORK}/gocache-empty
-exec garble build -a runtime
-exec garble build -o=main_rebuild$exe ./stdimporter
+exec garble -seed=${SEED} build -a runtime
+exec garble -seed=${SEED} build -o=main_rebuild$exe ./stdimporter
 bincmp main_rebuild$exe main$exe
 -- go.mod --
 module test/main

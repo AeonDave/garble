@@ -202,6 +202,29 @@ func (key *externalKey) ToExpr(b int) ast.Expr {
 	return x
 }
 
+// dataToInterleavedByteSlice splits the data into even/odd slices and
+// reconstructs it at runtime by interleaving both slices back together.
+// When external keys are provided, both slices are additionally scrambled.
+func dataToInterleavedByteSlice(rand *mathrand.Rand, data []byte, extKeys []*externalKey) ast.Expr {
+	even := make([]byte, (len(data)+1)/2)
+	odd := make([]byte, len(data)/2)
+	for i, b := range data {
+		if i%2 == 0 {
+			even[i/2] = b
+		} else {
+			odd[i/2] = b
+		}
+	}
+
+	var evenExpr ast.Expr = ah.DataToByteSlice(even)
+	var oddExpr ast.Expr = ah.DataToByteSlice(odd)
+	if rand != nil && len(extKeys) > 0 {
+		evenExpr = dataToByteSliceWithExtKeys(rand, even, extKeys)
+		oddExpr = dataToByteSliceWithExtKeys(rand, odd, extKeys)
+	}
+	return ah.InterleaveByteSlices(evenExpr, oddExpr, len(data))
+}
+
 // dataToByteSliceWithExtKeys scramble and turn a byte slice into an AST expression like:
 //
 //	func() []byte {

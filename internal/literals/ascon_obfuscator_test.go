@@ -127,6 +127,170 @@ func TestAsconObfuscator(t *testing.T) {
 	}
 }
 
+func TestAsconObfuscatorInterleavesKeyMaterial(t *testing.T) {
+	rand := mathrand.New(mathrand.NewSource(7))
+	nameProvider := func(r *mathrand.Rand, baseName string) string {
+		return baseName
+	}
+
+	helper := newAsconInlineHelper(rand, nameProvider)
+	obf := newAsconObfuscator(helper, newTestKeyProvider())
+	ctx := newTestContext(rand, nameProvider, helper)
+
+	extKeys := []*externalKey{
+		{name: "k1", typ: "uint16", value: 0x4242, bits: 16},
+	}
+
+	block := obf.obfuscate(ctx, []byte("interleave"), extKeys)
+	if block == nil || len(block.List) == 0 {
+		t.Fatal("Obfuscation failed to generate code")
+	}
+
+	assignStmt, ok := block.List[0].(*ast.AssignStmt)
+	if !ok || len(assignStmt.Rhs) != 1 {
+		t.Fatalf("Expected assignment to decrypt call, got %T", block.List[0])
+	}
+
+	decryptCall, ok := assignStmt.Rhs[0].(*ast.CallExpr)
+	if !ok || len(decryptCall.Args) != 3 {
+		t.Fatalf("Expected decrypt call with 3 args, got %T", assignStmt.Rhs[0])
+	}
+
+	for i, arg := range decryptCall.Args {
+		assertInterleavedArg(t, i, arg)
+	}
+}
+
+func TestAsconObfuscatorPanicMessageObfuscated(t *testing.T) {
+	rand := mathrand.New(mathrand.NewSource(11))
+	nameProvider := func(r *mathrand.Rand, baseName string) string {
+		return baseName
+	}
+
+	helper := newAsconInlineHelper(rand, nameProvider)
+	obf := newAsconObfuscator(helper, newTestKeyProvider())
+	ctx := newTestContext(rand, nameProvider, helper)
+
+	block := obf.obfuscate(ctx, []byte("panic"), nil)
+	if block == nil || len(block.List) < 2 {
+		t.Fatal("expected obfuscation block with if statement")
+	}
+
+	ifStmt, ok := block.List[1].(*ast.IfStmt)
+	if !ok {
+		t.Fatalf("expected if statement, got %T", block.List[1])
+	}
+
+	exprStmt, ok := ifStmt.Body.List[0].(*ast.ExprStmt)
+	if !ok {
+		t.Fatalf("expected expr statement in if body, got %T", ifStmt.Body.List[0])
+	}
+
+	panicCall, ok := exprStmt.X.(*ast.CallExpr)
+	if !ok || len(panicCall.Args) != 1 {
+		t.Fatalf("expected panic call with one arg, got %T", exprStmt.X)
+	}
+
+	if _, ok := panicCall.Args[0].(*ast.BasicLit); ok {
+		t.Fatalf("expected panic message to be obfuscated, found string literal")
+	}
+
+	msgCall, ok := panicCall.Args[0].(*ast.CallExpr)
+	if !ok {
+		t.Fatalf("expected panic arg to be call expression, got %T", panicCall.Args[0])
+	}
+
+	if ident, ok := msgCall.Fun.(*ast.Ident); !ok || ident.Name != "string" {
+		t.Fatalf("expected panic arg to be string(...) call, got %T", msgCall.Fun)
+	}
+}
+
+func assertInterleavedArg(t *testing.T, idx int, expr ast.Expr) {
+	t.Helper()
+	call, ok := expr.(*ast.CallExpr)
+	if !ok {
+		t.Fatalf("arg %d: expected call expression, got %T", idx, expr)
+	}
+
+	funLit, ok := call.Fun.(*ast.FuncLit)
+	if !ok {
+		t.Fatalf("arg %d: expected func literal, got %T", idx, call.Fun)
+	}
+
+	var evenOK, oddOK bool
+	for _, stmt := range funLit.Body.List {
+		rng, ok := stmt.(*ast.RangeStmt)
+		if !ok {
+			continue
+		}
+		sliceIdent, ok := rng.X.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		switch sliceIdent.Name {
+		case "even":
+			evenOK = rangeWritesInterleaved(rng.Body, 0)
+		case "odd":
+			oddOK = rangeWritesInterleaved(rng.Body, 1)
+		}
+	}
+
+	if !evenOK || !oddOK {
+		t.Fatalf("arg %d: expected even/odd interleave loops, even=%v odd=%v", idx, evenOK, oddOK)
+	}
+}
+
+func rangeWritesInterleaved(body *ast.BlockStmt, offset int) bool {
+	for _, stmt := range body.List {
+		assign, ok := stmt.(*ast.AssignStmt)
+		if !ok || len(assign.Lhs) != 1 {
+			continue
+		}
+		indexExpr, ok := assign.Lhs[0].(*ast.IndexExpr)
+		if !ok {
+			continue
+		}
+		dataIdent, ok := indexExpr.X.(*ast.Ident)
+		if !ok || dataIdent.Name != "data" {
+			continue
+		}
+		if offset == 0 && isMulByTwo(indexExpr.Index) {
+			return true
+		}
+		if offset == 1 && isAddOneMulByTwo(indexExpr.Index) {
+			return true
+		}
+	}
+	return false
+}
+
+func isMulByTwo(expr ast.Expr) bool {
+	bin, ok := expr.(*ast.BinaryExpr)
+	if !ok || bin.Op != token.MUL {
+		return false
+	}
+	return isIntLit(bin.X, 2) || isIntLit(bin.Y, 2)
+}
+
+func isAddOneMulByTwo(expr ast.Expr) bool {
+	bin, ok := expr.(*ast.BinaryExpr)
+	if !ok || bin.Op != token.ADD {
+		return false
+	}
+	if isIntLit(bin.X, 1) {
+		return isMulByTwo(bin.Y)
+	}
+	if isIntLit(bin.Y, 1) {
+		return isMulByTwo(bin.X)
+	}
+	return false
+}
+
+func isIntLit(expr ast.Expr, value int) bool {
+	lit, ok := expr.(*ast.BasicLit)
+	return ok && lit.Kind == token.INT && lit.Value == fmt.Sprint(value)
+}
+
 // TestAsconObfuscatorIntegration tests ASCON obfuscator with actual encryption/decryption
 func TestAsconObfuscatorIntegration(t *testing.T) {
 	rand := mathrand.New(mathrand.NewSource(123))

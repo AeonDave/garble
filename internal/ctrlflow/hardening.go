@@ -124,7 +124,7 @@ func (xorHardening) Apply(dispatcher []cfgInfo, ssaRemap map[ssa.Value]ast.Expr,
 					Type: &ast.FuncType{
 						Params: &ast.FieldList{List: []*ast.Field{{
 							Names: []*ast.Ident{ast.NewIdent("secondKey")},
-							Type:  &ast.ArrayType{Len: ah.IntLit(len(secondKey)), Elt: ast.NewIdent("byte")},
+							Type:  ah.ByteSliceType(),
 						}}},
 						Results: &ast.FieldList{List: []*ast.Field{{
 							Type: ast.NewIdent("int"),
@@ -148,11 +148,13 @@ func (xorHardening) Apply(dispatcher []cfgInfo, ssaRemap map[ssa.Value]ast.Expr,
 						},
 						ah.ReturnStmt(ast.NewIdent("r")),
 					}},
-				}, ah.DataToArray(secondKey))},
+				}, obfuscatedByteSliceExpr(secondKey))},
 			},
 		},
 	}
-	return globalKeyDecl, ah.AssignDefineStmt(ast.NewIdent(localKeyName), ast.NewIdent(globalKeyName))
+	assignLocal := ah.AssignDefineStmt(ast.NewIdent(localKeyName), ast.NewIdent(globalKeyName))
+	opaque := opaquePredicateStmt(ast.NewIdent(localKeyName))
+	return globalKeyDecl, ah.BlockStmt(assignLocal, opaque)
 }
 
 // delegateTableHardening replaces simple keys with a decryption function call
@@ -249,7 +251,7 @@ func (delegateTableHardening) Apply(dispatcher []cfgInfo, ssaRemap map[ssa.Value
 							Type: &ast.FuncType{
 								Params: &ast.FieldList{List: []*ast.Field{{
 									Names: []*ast.Ident{ast.NewIdent("key")},
-									Type:  &ast.ArrayType{Len: ah.IntLit(len(key)), Elt: ast.NewIdent("byte")},
+									Type:  ah.ByteSliceType(),
 								}}},
 								Results: &ast.FieldList{List: []*ast.Field{{Type: &ast.ArrayType{
 									Len: ah.IntLit(delegateCount),
@@ -280,12 +282,41 @@ func (delegateTableHardening) Apply(dispatcher []cfgInfo, ssaRemap map[ssa.Value
 								}}},
 							}},
 						}},
-						Args: []ast.Expr{ah.DataToArray(key)},
+						Args: []ast.Expr{obfuscatedByteSliceExpr(key)},
 					},
 				},
 			},
 		},
 	}
 
-	return delegateTableDecl, nil
+	localKeyName := getRandomName(rnd)
+	assignLocal := ah.AssignDefineStmt(ast.NewIdent(localKeyName), ah.CallExprByName("len", ast.NewIdent(globalTableName)))
+	opaque := opaquePredicateStmt(ast.NewIdent(localKeyName))
+	return delegateTableDecl, ah.BlockStmt(assignLocal, opaque)
+}
+
+func opaquePredicateStmt(keyExpr ast.Expr) ast.Stmt {
+	// Always false at runtime, but non-trivial for the compiler to simplify.
+	// len(make([]byte, (key&7)+1)) is at least 1, so it can never be 0.
+	sizeExpr := ah.BinaryExpr(
+		ah.BinaryExpr(keyExpr, token.AND, ah.IntLit(7)),
+		token.ADD,
+		ah.IntLit(1),
+	)
+	makeExpr := ah.CallExprByName("make", ah.ByteSliceType(), sizeExpr)
+	cond := ah.BinaryExpr(ah.CallExprByName("len", makeExpr), token.EQL, ah.IntLit(0))
+	return &ast.IfStmt{Cond: cond, Body: ah.BlockStmt()}
+}
+
+func obfuscatedByteSliceExpr(data []byte) ast.Expr {
+	even := make([]byte, (len(data)+1)/2)
+	odd := make([]byte, len(data)/2)
+	for i, b := range data {
+		if i%2 == 0 {
+			even[i/2] = b
+		} else {
+			odd[i/2] = b
+		}
+	}
+	return ah.InterleaveByteSlices(ah.DataToByteSlice(even), ah.DataToByteSlice(odd), len(data))
 }

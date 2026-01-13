@@ -7,7 +7,7 @@ This Agents.md file provides comprehensive guidance for AI agents working with t
 - `/`: Root directory containing main entry points and core transformation logic
   - `main.go`: Main CLI entry point that AI agents should analyze for command-line interface
   - `transformer.go`: Core obfuscation engine that AI agents should understand for modifications
-  - `hash.go`, `position.go`, `reverse.go`: Key utility functions for name hashing and position obfuscation
+  - `hash.go`, `position.go`: Key utility functions for name hashing and position obfuscation
 - `/internal`: Internal packages that AI agents should analyze deeply
   - `/literals`: Literal obfuscation strategies (ASCON-128, simple obfuscators) that AI agents should understand for encryption features
   - `/ctrlflow`: Control-flow obfuscation with jump tables and dead code injection

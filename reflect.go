@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bytes"
 	_ "embed"
-	"fmt"
 	"go/types"
 	"maps"
 	"os"
@@ -65,30 +63,9 @@ func reflectMainPrePatch(path string) (string, error) {
 	return string(content) + code, nil
 }
 
-// reflectMainPostPatch populates the name mapping with the final obfuscated->real name
-// mappings after all packages have been analyzed.
-// If -reversible flag is not set, the array remains empty to prevent leaking original names.
+// reflectMainPostPatch keeps the name mapping empty to avoid leaking original names.
 func reflectMainPostPatch(file []byte, lpkg *listedPackage, pkg pkgCache) []byte {
-	obfVarName := hashWithPackage(lpkg, "_originalNamePairs")
-	namePairs := fmt.Appendf(nil, "%s = []string{", obfVarName)
-
-	// If -reversible flag is not set, keep the array empty to prevent leaking original names.
-	// This eliminates the reflection oracle that tools like ungarble_bn exploit.
-	if !flagReversible {
-		// Return the file with an empty array - no name leakage
-		return bytes.Replace(file, namePairs, namePairs, 1)
-	}
-
-	// Legacy behavior when -reversible is explicitly enabled:
-	// Populate the array with obfuscated->original name mappings.
-	// WARNING: This leaks original names in the binary and enables garble reverse.
-	keys := slices.Sorted(maps.Keys(pkg.ReflectObjectNames))
-	namePairsFilled := bytes.Clone(namePairs)
-	for _, obf := range keys {
-		namePairsFilled = fmt.Appendf(namePairsFilled, "%q, %q,", obf, pkg.ReflectObjectNames[obf])
-	}
-
-	return bytes.Replace(file, namePairs, namePairsFilled, 1)
+	return file
 }
 
 type reflectInspector struct {

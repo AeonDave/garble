@@ -84,6 +84,61 @@ func DataToByteSlice(data []byte) *ast.CallExpr {
 	}
 }
 
+// InterleaveByteSlices returns an AST expression that reconstructs a byte slice
+// by interleaving even/odd slices.
+//
+//	func() []byte {
+//		even := <evenExpr>
+//		odd := <oddExpr>
+//		data := make([]byte, <totalLen>)
+//		for i0, b0 := range even {
+//			data[i0*2] = b0
+//		}
+//		for i1, b1 := range odd {
+//			data[i1*2+1] = b1
+//		}
+//		return data
+//	}()
+func InterleaveByteSlices(evenExpr, oddExpr ast.Expr, totalLen int) *ast.CallExpr {
+	makeData := CallExprByName("make", ByteSliceType(), IntLit(totalLen))
+
+	evenRange := &ast.RangeStmt{
+		Key:   ast.NewIdent("i0"),
+		Value: ast.NewIdent("b0"),
+		Tok:   token.DEFINE,
+		X:     ast.NewIdent("even"),
+		Body: BlockStmt(AssignStmt(
+			IndexExprByExpr(ast.NewIdent("data"), BinaryExpr(ast.NewIdent("i0"), token.MUL, IntLit(2))),
+			ast.NewIdent("b0"),
+		)),
+	}
+
+	oddIndex := BinaryExpr(
+		BinaryExpr(ast.NewIdent("i1"), token.MUL, IntLit(2)),
+		token.ADD,
+		IntLit(1),
+	)
+	oddRange := &ast.RangeStmt{
+		Key:   ast.NewIdent("i1"),
+		Value: ast.NewIdent("b1"),
+		Tok:   token.DEFINE,
+		X:     ast.NewIdent("odd"),
+		Body: BlockStmt(AssignStmt(
+			IndexExprByExpr(ast.NewIdent("data"), oddIndex),
+			ast.NewIdent("b1"),
+		)),
+	}
+
+	return LambdaCall(nil, ByteSliceType(), BlockStmt(
+		AssignDefineStmt(ast.NewIdent("even"), evenExpr),
+		AssignDefineStmt(ast.NewIdent("odd"), oddExpr),
+		AssignDefineStmt(ast.NewIdent("data"), makeData),
+		evenRange,
+		oddRange,
+		ReturnStmt(ast.NewIdent("data")),
+	), nil)
+}
+
 // DataToArray turns a byte slice like []byte{1, 2, 3} into an AST
 // expression
 func DataToArray(data []byte) *ast.CompositeLit {

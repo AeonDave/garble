@@ -10,7 +10,7 @@
 
 Encrypt the garble build cache to prevent leakage of obfuscation mappings and package metadata stored on disk.
 
-> **2025 update:** In addition to seed-driven keys, Garble now derives cache-encryption keys from the build nonce whenever no CLI seed is provided. This produces per-build cache entries so the cache remains encrypted even for seedless builds.
+> **2025 update:** Cache encryption is enabled by default. When no CLI seed is provided, Garble generates a random per-build seed, so cache entries remain encrypted and per-build unique.
 
 ---
 
@@ -285,7 +285,6 @@ var (
     flagDebug        bool
     flagDebugDir     string
     flagSeed         seedFlag
-    flagReversible   bool
     buildNonceRandom bool
     flagCacheEncrypt = true  // DEFAULT ON for security
     flagControlFlowMode   = ctrlflow.ModeOff
@@ -315,7 +314,7 @@ func saveSharedCache() (string, error) {
             return "", err
         }
     } else {
-        // Fallback: unencrypted only when -no-cache-encrypt is requested or no nonce is available
+        // Fallback: unencrypted only when -no-cache-encrypt is requested
         if err := writeGobExclusive(cachePath, &sharedCache); err != nil {
             return "", err
         }
@@ -499,7 +498,6 @@ var (
     flagDebug        bool
     flagDebugDir     string
     flagSeed         seedFlag
-    flagReversible   bool
     buildNonceRandom bool
     flagCacheEncrypt = true  // NEW: Default ON
     flagControlFlowMode   = ctrlflow.ModeOff
@@ -517,14 +515,14 @@ func init() {
 
 **Usage**:
 ```bash
-# Default: Cache encrypted automatically when seed is provided
-garble build -seed=random
+# Default: random seed per build; cache encrypted automatically
+garble build
+
+# Print the generated random seed
+garble -seed=random build
 
 # Disable cache encryption (opt-out, not recommended)
-garble -no-cache-encrypt build -seed=random
-
-# Without seed: cache not encrypted (no key available)
-garble build
+garble -no-cache-encrypt build
 ```
 
 ### Phase 3: Testing (Sprint 1)

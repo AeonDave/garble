@@ -892,6 +892,7 @@ func (tf *transformer) processImportCfg(flags []string, requiredPkgs []string) (
 	if err != nil {
 		return "", err
 	}
+	defer newCfg.Close()
 	for _, pair := range importmaps {
 		beforePath, afterPath := pair[0], pair[1]
 		lpkg, err := listPackage(tf.curPkg, beforePath)
@@ -969,9 +970,6 @@ func (tf *transformer) processImportCfg(flags []string, requiredPkgs []string) (
 	// newCfg.Seek(0, 0)
 	// io.Copy(os.Stderr, newCfg)
 
-	if err := newCfg.Close(); err != nil {
-		return "", err
-	}
 	return newCfg.Name(), nil
 }
 
@@ -1107,7 +1105,6 @@ func usesImportName(file *ast.File, name string) bool {
 
 func findDangerousDirective(files []*ast.File) (string, token.Position) {
 	dangerousDirectives := []string{
-		"//go:noinline",
 		"//go:noescape",
 		"//go:uintptrescapes",
 		"//go:nosplit",

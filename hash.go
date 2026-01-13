@@ -416,7 +416,7 @@ func randomName(rand *mathrand.Rand, baseName string) string {
 //
 // The result is always four bytes long. If the input was a valid identifier,
 // the output remains equally exported or unexported. Note that this process is
-// reproducible, but not reversible.
+// reproducible, but one-way.
 func hashWithCustomSalt(salt []byte, name string) string {
 	if len(salt) == 0 {
 		panic("hashWithCustomSalt: empty salt")

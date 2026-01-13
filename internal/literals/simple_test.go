@@ -18,7 +18,7 @@ func newSimpleContext(r *mathrand.Rand) *obfRand {
 	}
 }
 
-// TestSimpleObfuscator verifies both reversible and irreversible modes produce structured ASTs.
+// TestSimpleObfuscator verifies the irreversible obfuscator produces structured ASTs.
 func TestSimpleObfuscator(t *testing.T) {
 	testCases := []struct {
 		name string
@@ -31,109 +31,71 @@ func TestSimpleObfuscator(t *testing.T) {
 		{"long", []byte("The quick brown fox jumps over the lazy dog")},
 	}
 
-	modes := []struct {
-		name       string
-		reversible bool
-	}{
-		{name: "irreversible", reversible: false},
-		{name: "reversible", reversible: true},
-	}
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			rand := mathrand.New(mathrand.NewSource(42))
+			ctx := newSimpleContext(rand)
+			obf := simple{}
 
-	for _, mode := range modes {
-		mode := mode
-		t.Run(mode.name, func(t *testing.T) {
-			SetReversibleMode(mode.reversible)
-			t.Cleanup(func() { SetReversibleMode(false) })
+			extKeys := []*externalKey{
+				{name: "k1", typ: "uint32", value: 0x12345678, bits: 32},
+				{name: "k2", typ: "uint16", value: 0xABCD, bits: 16},
+			}
 
-			for _, tc := range testCases {
-				tc := tc
-				t.Run(tc.name, func(t *testing.T) {
-					rand := mathrand.New(mathrand.NewSource(42))
-					ctx := newSimpleContext(rand)
-					obf := simple{}
+			dataCopy := append([]byte(nil), tc.data...)
+			blockStmt := obf.obfuscate(ctx, dataCopy, extKeys)
 
-					extKeys := []*externalKey{
-						{name: "k1", typ: "uint32", value: 0x12345678, bits: 32},
-						{name: "k2", typ: "uint16", value: 0xABCD, bits: 16},
-					}
+			if blockStmt == nil {
+				t.Fatal("obfuscate returned nil")
+			}
 
-					dataCopy := append([]byte(nil), tc.data...)
-					blockStmt := obf.obfuscate(ctx, dataCopy, extKeys)
+			if len(blockStmt.List) == 0 {
+				t.Fatal("expected at least one statement")
+			}
 
-					if blockStmt == nil {
-						t.Fatal("obfuscate returned nil")
-					}
+			if len(tc.data) == 0 {
+				if len(blockStmt.List) != 1 {
+					t.Fatalf("expected 1 statement for empty data, got %d", len(blockStmt.List))
+				}
+				return
+			}
 
-					if len(blockStmt.List) == 0 {
-						t.Fatal("expected at least one statement")
-					}
+			hasDataAssign := false
+			foundSubkeys := false
+			helperCall := false
 
-					if len(tc.data) == 0 {
-						if len(blockStmt.List) != 1 {
-							t.Fatalf("expected 1 statement for empty data, got %d", len(blockStmt.List))
-						}
-						return
-					}
-
-					hasDataAssign := false
-					hasLoop := false
-					foundSubkeys := false
-					helperCall := false
-					hasNonce := false
-					hasKey := false
-
-					for _, stmt := range blockStmt.List {
-						switch s := stmt.(type) {
-						case *ast.AssignStmt:
-							for _, lhs := range s.Lhs {
-								if ident, ok := lhs.(*ast.Ident); ok {
-									switch ident.Name {
-									case "data":
-										hasDataAssign = true
-									case "nonce":
-										hasNonce = true
-									case "key":
-										hasKey = true
-									case "subkeys":
-										foundSubkeys = true
-									}
-								}
+			for _, stmt := range blockStmt.List {
+				switch s := stmt.(type) {
+				case *ast.AssignStmt:
+					for _, lhs := range s.Lhs {
+						if ident, ok := lhs.(*ast.Ident); ok {
+							switch ident.Name {
+							case "data":
+								hasDataAssign = true
+							case "subkeys":
+								foundSubkeys = true
 							}
-							if len(s.Rhs) == 1 {
-								if call, ok := s.Rhs[0].(*ast.CallExpr); ok {
-									if ident, ok := call.Fun.(*ast.Ident); ok && ctx.irreversibleHelper != nil && ident.Name == ctx.irreversibleHelper.funcName {
-										helperCall = true
-									}
-								}
+						}
+					}
+					if len(s.Rhs) == 1 {
+						if call, ok := s.Rhs[0].(*ast.CallExpr); ok {
+							if ident, ok := call.Fun.(*ast.Ident); ok && ctx.irreversibleHelper != nil && ident.Name == ctx.irreversibleHelper.funcName {
+								helperCall = true
 							}
-						case *ast.ForStmt:
-							hasLoop = true
 						}
 					}
+				}
+			}
 
-					if !hasDataAssign {
-						t.Error("expected data assignment in obfuscation block")
-					}
-
-					if mode.reversible {
-						if !hasNonce {
-							t.Error("expected nonce statement in reversible mode")
-						}
-						if !hasKey {
-							t.Error("expected key statement in reversible mode")
-						}
-						if !hasLoop {
-							t.Error("expected deobfuscation loop in reversible mode")
-						}
-					} else {
-						if !foundSubkeys {
-							t.Error("expected subkey material in irreversible mode")
-						}
-						if !helperCall {
-							t.Error("expected call to irreversible decode helper")
-						}
-					}
-				})
+			if !hasDataAssign {
+				t.Error("expected data assignment in obfuscation block")
+			}
+			if !foundSubkeys {
+				t.Error("expected subkey material in irreversible mode")
+			}
+			if !helperCall {
+				t.Error("expected call to irreversible decode helper")
 			}
 		})
 	}
@@ -254,46 +216,6 @@ func main() {
 }
 `
 	_ = testCode
-}
-
-// TestSimpleObfuscatorReversibleStructure ensures reversible mode retains metadata required for decoding.
-func TestSimpleObfuscatorReversibleStructure(t *testing.T) {
-	data := []byte("Test comparison")
-	rand := mathrand.New(mathrand.NewSource(42))
-	ctx := newSimpleContext(rand)
-	obf := simple{}
-
-	extKeys := []*externalKey{{name: "k1", typ: "uint32", value: 0x12345678, bits: 32}}
-
-	SetReversibleMode(true)
-	t.Cleanup(func() { SetReversibleMode(false) })
-
-	blockStmt := obf.obfuscate(ctx, data, extKeys)
-
-	hasNonce := false
-	hasKey := false
-	hasLoop := false
-	for _, stmt := range blockStmt.List {
-		switch s := stmt.(type) {
-		case *ast.AssignStmt:
-			for _, lhs := range s.Lhs {
-				if ident, ok := lhs.(*ast.Ident); ok {
-					if ident.Name == "nonce" {
-						hasNonce = true
-					}
-					if ident.Name == "key" {
-						hasKey = true
-					}
-				}
-			}
-		case *ast.ForStmt:
-			hasLoop = true
-		}
-	}
-
-	if !hasNonce || !hasKey || !hasLoop {
-		t.Fatalf("reversible mode missing structures (nonce=%v key=%v loop=%v)", hasNonce, hasKey, hasLoop)
-	}
 }
 
 // BenchmarkSimpleObfuscator benchmarks the improved simple obfuscator

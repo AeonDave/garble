@@ -95,12 +95,12 @@ func main() {
 	runGarbleBuild(t, garbleBin, moduleDir, append([]string{}, baseEnv...))
 
 	if !cacheHasFiles(t, cacheDir) {
-		t.Fatalf("expected cache files after nonce-backed encrypted build")
+		t.Fatalf("expected cache files after default encrypted build")
 	}
 
 	for _, data := range cacheFileBytes(t, cacheDir) {
 		if err := tryGobDecode(data); err == nil {
-			t.Fatalf("seedless encrypted cache unexpectedly decodable via gob")
+			t.Fatalf("default encrypted cache unexpectedly decodable via gob")
 		}
 	}
 }

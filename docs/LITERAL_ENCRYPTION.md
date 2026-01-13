@@ -14,8 +14,7 @@ determinism across Linux and Windows builds.
   final binary.
 - Guarantee deterministic output when the same seed and nonce are supplied.
 - Mix in per-file entropy so repeating literals never reuse the exact key pair.
-- Fall back to reversible transforms when explicitly requested via
-  `-reversible`, while keeping the irreversible pipeline the default.
+- Apply only irreversible transforms; only one-way transforms are supported.
 
 ## Key Derivation
 
@@ -24,8 +23,8 @@ Key material is produced by `literals.NewHKDFKeyProvider` (see
 
 1. Receives a master secret from `transformer.newLiteralKeyProvider`
    (`transformer.go:1246`).  
-   - With `-seed`, the secret is `combineSeedAndNonce(seed, nonce)`.
-   - Without `-seed`, the package’s `GarbleActionID` hash acts as the master.
+   - Garble always uses a seed (random per build unless explicitly provided),
+     so the secret is `combineSeedAndNonce(seed, nonce)`.
 2. Copies the package-level salt (`GarbleActionID`) and file identifier
    (a slashified relative path) into HKDF’s `info`.
 3. Calls `hkdf.Extract` and `hkdf.Expand` with SHA-256, deriving 32 bytes per
@@ -76,11 +75,17 @@ defence in depth. The primary options are:
   parameters) into the key and nonce before encryption so two identical literals
   still yield different ciphertext.
 - Encrypts data using the inlined ASCON implementation (`internal/literals/ascon_inline.go`).
+- Embeds key/nonce/ciphertext as interleaved slices to avoid raw byte arrays in
+  the binary; the slices are reconstructed at runtime and can be additionally
+  scrambled via external keys.
 - Emits runtime code:
   1. Calls the inline decrypt helper with embedded key, nonce, and ciphertext.
   2. Verifies the authentication tag.
   3. Returns the plaintext (slicing away junk padding for strings).
-- Panics if authentication fails, signalling tampering or decode errors.
+- Zeroizes key/nonce/ciphertext (and auth tag) after use to reduce memory
+  residue.
+- Panics if authentication fails, signalling tampering or decode errors. The
+  panic message itself is obfuscated at build time.
 
 ### Irreversible simple transforms
 
@@ -89,16 +94,9 @@ defence in depth. The primary options are:
 - Used for specialised cases and as fallbacks when ASCON is not selected.
 - Each strategy rewrites the literal through deterministic arithmetic,
   shuffling, or Feistel-style mixes using HKDF-derived material.
-- When `-reversible` is **disabled** (production default), helpers from
-  `irreversible_inline.go` add additional Feistel rounds and S-box substitution
-  so the decode path does not reveal the original data in a single step.
-
-### Reversible mode
-
-- `-reversible` flips a package-level switch (`internal/literals/literals.go:38`)
-  allowing the reversible obfuscator to be chosen, ensuring compatibility with
-  `garble reverse`. Security reviewers should treat this as a deliberate
-  downgrade for debugging only.
+- Helpers from `irreversible_inline.go` add additional Feistel rounds and S-box
+  substitution so the decode path does not reveal the original data in a single
+  step.
 
 ### External keys
 
@@ -118,9 +116,16 @@ parameters. At decode time they:
   binaries.  
   HKDF draws from `combineSeedAndNonce`, so every literal uses the same key
   material across deterministic rebuilds.
-- Without a seed, the package’s `GarbleActionID` guarantees stability within a
-  build while still being unique per compilation.
+- Garble generates a random seed per build when no explicit `-seed` is given,
+  keeping each build unique while remaining deterministic within that build.
 - HKDF state lives entirely in memory; no key material is written to disk.
+
+## Operational consequences
+
+- Inline ASCON adds small runtime overhead per literal (decrypt + zeroization).
+- Interleaving and external-key mixing add minor allocations and extra code size.
+- These costs are intentional; the goal is to slow static extraction rather than
+  optimize throughput.
 
 ## Testing
 
@@ -128,7 +133,7 @@ The literal pipeline is validated by a mix of unit, integration, and fuzz
 tests:
 
 - `go test ./internal/literals` exercises the HKDF provider, ASCON encode/decode
-  paths, reversible helpers, and builder behaviour.
+  paths, irreversible helpers, and builder behaviour.
 - `internal/literals/ascon_obfuscator_test.go` checks per-literal authenticity,
   external key mixing, and the inline decrypt helper.
 - `internal/literals/fuzz_test.go` runs `FuzzObfuscate` to catch decode
@@ -142,14 +147,12 @@ variant to ensure deterministic HKDF usage under concurrency.
 ## Operational Guidance
 
 - Enable `-literals` for any build that ships outside your organisation.
-- Pair it with `-controlflow=auto` and `-seed=random` for the strongest default
-  posture.
-- Keep `-reversible` off in production; only enable it when you need
-  `garble reverse` for debugging.
+- Pair it with `-controlflow=auto` and `-tiny` for the strongest default posture
+  (a random seed is generated per build by default).
 - Packages with low-level compiler directives (for example `//go:nosplit`) skip
   literal obfuscation; Garble logs the first triggering directive and position.
 - Treat ASCON authentication failures as tampering indicators-the binary will
-  panic with a clear `garble: literal authentication failed` message.
+  panic with an obfuscated `garble: literal authentication failed` message.
 
 ## References
 

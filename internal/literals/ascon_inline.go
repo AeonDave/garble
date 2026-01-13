@@ -77,6 +77,12 @@ func %s(key, nonce, ciphertextAndTag []byte) ([]byte, bool) {
 		b[0], b[1], b[2], b[3] = byte(x>>56), byte(x>>48), byte(x>>40), byte(x>>32)
 		b[4], b[5], b[6], b[7] = byte(x>>24), byte(x>>16), byte(x>>8), byte(x)
 	}
+
+	zero := func(b []byte) {
+		for i := range b {
+			b[i] = 0
+		}
+	}
 	
 	%s := func(key, nonce []byte) [5]uint64 {
 		var s [5]uint64
@@ -104,6 +110,11 @@ func %s(key, nonce, ciphertextAndTag []byte) ([]byte, bool) {
 	}
 	
 	if len(ciphertextAndTag) < 16 {
+		return nil, false
+	}
+
+	// Opaque predicate to complicate static analysis.
+	if uint(len(ciphertextAndTag))+1 == 0 {
 		return nil, false
 	}
 	
@@ -146,11 +157,20 @@ func %s(key, nonce, ciphertextAndTag []byte) ([]byte, bool) {
 		diff |= receivedTag[i] ^ expectedTag[i]
 	}
 	tagMatch := diff == 0
-	
+
 	if !tagMatch {
+		zero(plaintext)
+		zero(expectedTag)
+		zero(key)
+		zero(nonce)
+		zero(ciphertextAndTag)
 		return nil, false
 	}
-	
+
+	zero(expectedTag)
+	zero(key)
+	zero(nonce)
+	zero(ciphertextAndTag)
 	return plaintext, true
 }
 `, h.funcName,
@@ -194,22 +214,18 @@ func (h *asconInlineHelper) encryptStringLiteral(value string) ast.Expr {
 
 	// Generate call: _garbleAsconDecrypt(key, nonce, encrypted)
 	return &ast.CallExpr{
-		Fun: &ast.CallExpr{
-			Fun: ast.NewIdent("string"),
-			Args: []ast.Expr{
-				&ast.CallExpr{
-					Fun: &ast.IndexExpr{
-						X: &ast.CallExpr{
-							Fun: ast.NewIdent(h.funcName),
-							Args: []ast.Expr{
-								bytesToByteSliceLiteral(key),
-								bytesToByteSliceLiteral(nonce),
-								bytesToByteSliceLiteral(encrypted),
-							},
-						},
-						Index: ast.NewIdent("0"), // Extract plaintext (first return value)
+		Fun: ast.NewIdent("string"),
+		Args: []ast.Expr{
+			&ast.IndexExpr{
+				X: &ast.CallExpr{
+					Fun: ast.NewIdent(h.funcName),
+					Args: []ast.Expr{
+						bytesToByteSliceLiteral(key),
+						bytesToByteSliceLiteral(nonce),
+						bytesToByteSliceLiteral(encrypted),
 					},
 				},
+				Index: ast.NewIdent("0"), // Extract plaintext (first return value)
 			},
 		},
 	}

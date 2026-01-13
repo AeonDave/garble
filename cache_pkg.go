@@ -69,15 +69,8 @@ func cacheEncryptionSeed() ([]byte, bool) {
 	if flagSeed.present() {
 		return flagSeed.bytes, false
 	}
-	hasBuildNonce := sharedCache != nil && len(sharedCache.BuildNonce) > 0
-	if seed := seedHashInput(); len(seed) > 0 && hasBuildNonce {
-		if flagDebug {
-			fmt.Fprintln(cacheEncryptWarnWriter, "garble: cache encryption using per-build nonce; supply -seed for reusable encrypted cache entries or disable with -no-cache-encrypt")
-		}
-		return seed, true
-	}
 	cacheEncryptWarnOnce.Do(func() {
-		fmt.Fprintln(cacheEncryptWarnWriter, "garble: cache encryption disabled because no seed or build nonce is available; pass -seed or disable with -no-cache-encrypt")
+		fmt.Fprintln(cacheEncryptWarnWriter, "garble: cache encryption disabled because no seed is available; pass -seed or disable with -no-cache-encrypt")
 	})
 	return nil, false
 }

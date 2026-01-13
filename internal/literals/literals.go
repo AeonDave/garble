@@ -27,15 +27,6 @@ const (
 // NameProviderFunc defines a function type that generates a string based on a random source and a base name.
 type NameProviderFunc func(rand *mathrand.Rand, baseName string) string
 
-// reversibleMode controls whether obfuscation should be reversible.
-// Set by the -reversible flag to enable weaker but reversible obfuscation.
-var reversibleMode bool
-
-// SetReversibleMode sets the obfuscation mode.
-func SetReversibleMode(reversible bool) {
-	reversibleMode = reversible
-}
-
 type BuilderConfig struct {
 	KeyProvider KeyProvider
 }

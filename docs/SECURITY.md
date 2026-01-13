@@ -13,7 +13,7 @@ This document provides the comprehensive technical security architecture of Garb
 2. [Seed & Nonce Architecture](#2-seed--nonce-architecture)
 3. [Runtime Metadata Hardening (Feistel Cipher)](#3-runtime-metadata-hardening-feistel-cipher)
 4. [Literal Obfuscation (ASCON-128 + Simple)](#4-literal-obfuscation-ascon-128--simple)
-5. [Reflection Control & Reversibility](#5-reflection-control--reversibility)
+5. [Reflection Control](#5-reflection-control)
 6. [Build Cache Encryption (ASCON-128)](#6-build-cache-encryption-ascon-128)
 7. [Control-Flow Obfuscation](#7-control-flow-obfuscation)
 8. [Threat Model & Mitigation Matrix](#8-threat-model--mitigation-matrix)
@@ -29,9 +29,9 @@ This document provides the comprehensive technical security architecture of Garb
 | Component          | Status      | Implementation                                  |
 |--------------------|-------------|-------------------------------------------------|
 | Runtime Metadata   | ✅ Deployed  | 4-round Feistel cipher with per-function tweak  |
-| Literal Protection | ✅ Deployed  | ASCON-128 inline + reversible simple obfuscator |
+| Literal Protection | ✅ Deployed  | ASCON-128 inline + irreversible multi-layer obfuscation |
 | Name Hashing       | ✅ Deployed  | SHA-256 with per-build nonce mixing             |
-| Reflection Oracle  | ✅ Mitigated | Empty by default; opt-in via `-reversible`      |
+| Reflection Oracle  | ✅ Mitigated | Always empty; original identifiers never embedded |
 | Cache Encryption   | ✅ Deployed  | ASCON-128 at rest with authentication           |
 | Control-Flow       | ⚠️ Optional | Multiple modes available; default off           |
 
@@ -39,7 +39,7 @@ This document provides the comprehensive technical security architecture of Garb
 
 - **Per-Build Uniqueness**: Every build uses a cryptographically random nonce mixed with the seed, ensuring symbol names and keys differ even with identical source code (unless explicitly reproduced).
 - **Metadata Hardening**: Runtime function tables are encrypted with format-preserving Feistel encryption; decryption happens transparently at runtime via injected helpers.
-- **Literal Protection**: Strings and constants are encrypted inline using NIST-standard ASCON-128 or multi-layer reversible transforms (see `docs/LITERAL_ENCRYPTION.md`).
+- **Literal Protection**: Strings and constants are encrypted inline using NIST-standard ASCON-128 plus multi-layer irreversible transforms (see `docs/LITERAL_ENCRYPTION.md`).
 - **Reflection Suppression**: Original identifier names are omitted from binaries by default, eliminating the reverse-engineering oracle.
 - **Cache Security**: Build artifacts are encrypted at rest; tampering is detected via authentication tags.
 
@@ -87,7 +87,7 @@ Provide reproducible yet secure randomness for all obfuscation operations, with 
 #### Seed (`-seed` flag)
 - **Format**: Base64-encoded bytes or literal `random`
 - **Processing**: Hashed to 32 bytes via SHA-256 for uniform entropy
-- **Default**: Unset (entropy derived from nonce only)
+- **Default**: Random per build (use `-seed=random` to print the generated seed)
 - **Random Mode**: Generates 32 cryptographic random bytes; printed to stderr for reproducibility
 
 #### Build Nonce (`GARBLE_BUILD_NONCE` env)
@@ -222,7 +222,7 @@ F(right uint16, tweak uint32, key uint32) → uint16:
 ### Why Feistel?
 
 1. **Provable Security**: Well-studied structure used in DES, Blowfish, Twofish
-2. **Perfect Reversibility**: Same structure for encryption/decryption (reverse key order)
+2. **Perfect Invertibility**: Same structure for encryption/decryption (reverse key order)
 3. **Format-Preserving**: 32-bit input → 32-bit output (maintains offset size)
 4. **Tweak Support**: nameOff parameter ensures unique encryption per function
 5. **Fast**: Simple bitwise operations, no memory allocations
@@ -351,7 +351,7 @@ Packages that include low-level compiler directives (e.g., `//go:nosplit`, `//go
 Garble employs multiple obfuscation strategies selected randomly per literal for defense-in-depth:
 
 1. **ASCON-128** (Primary): NIST Lightweight Cryptography standard, authenticated encryption
-2. **Simple Reversible** (Secondary): Multi-layer XOR with position-dependent keys and byte chaining
+2. **Simple Irreversible** (Secondary): S-box substitution + Feistel mixing with HKDF-derived subkeys
 
 ### ASCON-128 Architecture
 
@@ -378,14 +378,15 @@ Garble employs multiple obfuscation strategies selected randomly per literal for
 │  Runtime (generated code):                                      │
 │                                                                 │
 │  data, ok := _garbleAsconDecrypt(                               │
-│      []byte{...key...},                                         │
-│      []byte{...nonce...},                                       │
-│      []byte{...ciphertext||tag...}                              │
+│      interleave(evenKey, oddKey),                               │
+│      interleave(evenNonce, oddNonce),                           │
+│      interleave(evenCt, oddCt)                                  │
 │  )                                                              │
 │  if !ok {                                                       │
-│      panic("garble: authentication failed")                     │
+│      panic(string(interleave(...)))                             │
 │  }                                                              │
 │  // data now contains decrypted plaintext                       │
+│  // key/nonce/ciphertext are zeroized after use                 │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -400,60 +401,24 @@ Garble employs multiple obfuscation strategies selected randomly per literal for
 | **Tag Size**       | 128-bit (16 bytes) | Detects tampering                      |
 | **Authentication** | Yes (AEAD)         | Integrity + confidentiality            |
 | **Performance**    | Lightweight        | Optimized for constrained environments |
+| **Zeroization**    | Yes                | Scrubs key/nonce/cipher/tag after use  |
 
-### Simple Reversible Architecture
+### Simple Irreversible Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│         Simple Reversible Multi-Layer Obfuscation                │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  Build Time (internal/literals/simple.go):                      │
-│                                                                 │
-│  1. Generate random nonce (8 bytes) and key (len(data) bytes)   │
-│                                                                 │
-│  2. Select random operators for layers                          │
-│     op1 = random(XOR, ADD, SUB)                                 │
-│     op2 = random(XOR, ADD, SUB)                                 │
-│                                                                 │
-│  3. For each byte i in plaintext:                               │
-│     // Layer 1: Position-dependent key                          │
-│     posKey = key[i] ^ byte(i*7+13)  // Prime mixing             │
-│     layer1 = data[i] ^ posKey                                   │
-│                                                                 │
-│     // Layer 2: Nonce mixing                                    │
-│     layer2 = layer1 OP1 nonce[i % len(nonce)]                   │
-│                                                                 │
-│     // Layer 3: Byte chaining (if not first byte)               │
-│     if i > 0:                                                   │
-│       layer2 = layer2 OP2 (obfuscated[i-1] >> 3)                │
-│                                                                 │
-│     obfuscated[i] = layer2                                      │
-│                                                                 │
-│  Runtime (generated code):                                      │
-│                                                                 │
-│  // Reverse the layers in opposite order                        │
-│  for i := 0; i < len(data); i++ {                               │
-│      // Reverse layer 3 (chain dependency)                      │
-│      if i > 0 {                                                 │
-│          data[i] = data[i] REVERSE_OP2 (prevTemp >> 3)          │
-│      }                                                          │
-│      // Reverse layer 2 (nonce)                                 │
-│      data[i] = data[i] REVERSE_OP1 nonce[i % len(nonce)]        │
-│      // Reverse layer 1 (position key)                          │
-│      posKey := key[i] ^ byte(i*7+13)                            │
-│      data[i] = data[i] ^ posKey                                 │
-│  }                                                              │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+The simple obfuscator is now irreversible and uses HKDF-derived subkeys plus
+S-box substitution and Feistel mixing:
+
+1. Derive per-literal subkeys from HKDF (`garble/literals/irreversible:v1`).
+2. Encrypt the literal data via S-box substitution + Feistel rounds.
+3. Embed ciphertext and subkeys; apply external-key mixing to hide constants.
+4. Emit an inline decode helper (from `irreversible_inline.go`) to restore the
+   plaintext at runtime without exposing original names or mappings.
 
 #### Simple Obfuscator Properties
 
-- **Layers**: 3 (position-key XOR, nonce mixing, byte chaining)
-- **Nonce**: 8 bytes per literal (prevents cross-build correlation)
-- **Operators**: Random selection (XOR/ADD/SUB) per layer
-- **Reversibility**: Fully reversible (supports `garble reverse`)
+- **Layers**: S-box substitution + Feistel mixing + external key mixing
+- **Subkeys**: HKDF-derived per literal
+- **Reversibility**: Not supported (no de-obfuscation metadata)
 - **Performance**: Fast for small literals
 
 ### Obfuscator Selection Strategy
@@ -550,7 +515,7 @@ go build -ldflags="-X main.apiKey=sk_live_51234567890abcdefABCDEF"
 | Attack Vector                   | Normal Build           | Garble Build                |
 |---------------------------------|------------------------|-----------------------------|
 | `strings binary \| grep apiKey` | ❌ Plaintext found      | ✅ Not found                 |
-| Static analysis                 | ❌ Immediate extraction | ⚠️ Requires decrypt reverse |
+| Static analysis                 | ❌ Immediate extraction | ⚠️ Requires reversing the runtime decode path |
 | Hex editor search               | ❌ Visible bytes        | ✅ Only ciphertext           |
 | Memory dump (runtime)           | ⚠️ Always plaintext    | ⚠️ Decrypted in memory      |
 
@@ -590,133 +555,36 @@ Using API key: sk_live_ABC123  ← Decrypted at runtime ✅
 | Byte slices         | ✅ Obfuscated         | Treated as literals                                                  |
 | Const expressions   | ⚠️ Partially covered | Safe string consts are rewritten; compile-time contexts remain const |
 | -ldflags -X strings | ✅ Covered            | Sanitised at flag parse; runtime decrypt                             |
-| Irreversible simple | ⚠️ Planned           | Currently uses reversible path                                       |
+| Irreversible simple | ✅ Deployed           | Feistel + S-box decode helper                                        |
 
 ### Implementation References
 - `internal/literals/ascon.go`: Core ASCON-128 implementation
 - `internal/literals/ascon_inline.go`: Inline code generator
 - `internal/literals/ascon_obfuscator.go`: Obfuscator integration
-- `internal/literals/simple.go`: Simple reversible obfuscator
+- `internal/literals/simple.go`: Simple irreversible obfuscator
 - `internal/literals/obfuscators.go`: Selection strategy
 - Tests: `ascon_test.go`, `simple_test.go`, `ascon_integration_test.go`
 
 ---
 
-## 5. Reflection Control & Reversibility
+## 5. Reflection Control
 
 ### Purpose
 
-Eliminate the "reflection oracle" that leaked obfuscated-to-original identifier mappings, while preserving opt-in support for debugging workflows via `garble reverse`.
+Eliminate the "reflection oracle" that leaked obfuscated-to-original identifier mappings by never embedding original names.
 
-### Architecture Diagram
+### Behavior
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│              Default Mode (Secure)                           │
-│              garble build                                    │
-├──────────────────────────────────────────────────────────────┤
-│                                                              │
-│  reflect.go: reflectMainPostPatch()                          │
-│                                                              │
-│  if !flagReversible {                                        │
-│      _originalNamePairs = []string{}  // EMPTY               │
-│  }                                                           │
-│                                                              │
-│  Binary Contents:                                            │
-│    ✓ Obfuscated names only                                   │
-│    ✓ No original identifier mapping                          │
-│    ✓ Reflection still works (with obfuscated names)          │
-│    ✓ No reverse-engineering oracle                           │
-│    ✗ garble reverse not supported                            │
-│                                                              │
-└──────────────────────────────────────────────────────────────┘
-
-┌──────────────────────────────────────────────────────────────┐
-│              Reversible Mode (Debug/Staging)                 │
-│              garble -reversible build                        │
-├──────────────────────────────────────────────────────────────┤
-│                                                              │
-│  reflect.go: reflectMainPostPatch()                          │
-│                                                              │
-│  if flagReversible {                                         │
-│      _originalNamePairs = []string{                          │
-│          "ObfName1", "OrigName1",                            │
-│          "ObfName2", "OrigName2",                            │
-│          ...                                                 │
-│      }  // POPULATED                                         │
-│  }                                                           │
-│                                                              │
-│  Binary Contents:                                            │
-│    ✓ Obfuscated names                                        │
-│    ✓ Original names embedded (mapping array)                 │
-│    ✓ garble reverse supported                                │
-│    ⚠️  Reverse-engineering oracle present                     │
-│    ⚠️  Reduced security (explicit trade-off)                  │
-│                                                              │
-└──────────────────────────────────────────────────────────────┘
-```
+- `_originalNamePairs` is always empty.
+- Reflection still works, but only with obfuscated names.
+- No de-obfuscation/debug mode is provided.
 
 ### Implementation
 
-```go
-// reflect.go - Security-first approach
-
-func reflectMainPostPatch(file []byte, lpkg *listedPackage, pkg pkgCache) []byte {
-    obfVarName := hashWithPackage(lpkg, "_originalNamePairs")
-    namePairs := fmt.Appendf(nil, "%s = []string{", obfVarName)
-
-    // Default: Keep array empty (no name leakage)
-    if !flagReversible {
-        return bytes.Replace(file, namePairs, namePairs, 1)
-    }
-
-    // Reversible mode: Populate mapping for garble reverse
-    keys := slices.Sorted(maps.Keys(pkg.ReflectObjectNames))
-    namePairsFilled := bytes.Clone(namePairs)
-    for _, obf := range keys {
-        namePairsFilled = fmt.Appendf(namePairsFilled, "%q, %q,", 
-            obf, pkg.ReflectObjectNames[obf])
-    }
-
-    return bytes.Replace(file, namePairs, namePairsFilled, 1)
-}
-```
-
-### Security Impact Comparison
-
-| Aspect                     | Default Mode               | `-reversible` Mode         |
-|----------------------------|----------------------------|----------------------------|
-| `_originalNamePairs`       | Empty array                | Populated with mappings    |
-| Original names in binary   | ✅ Not present              | ❌ Embedded in plaintext    |
-| Reflection functionality   | ✅ Works (obfuscated names) | ✅ Works (obfuscated names) |
-| `garble reverse`           | ❌ Not supported            | ✅ Supported                |
-| Reverse engineering oracle | ✅ Eliminated               | ❌ Present (by design)      |
-| Security level             | 🔒 High                    | 🔓 Medium (trade-off)      |
-
-### Usage Recommendations
-
-**Production Builds**:
-```sh
-garble build              # Default: maximum security
-```
-
-**Development/Staging**:
-```sh
-garble -reversible build  # Enable debugging support
-garble reverse binary < stack_trace.txt
-```
-
-### Propagation to Linker
-
-The `-reversible` flag is propagated to the linker via environment variable:
-```sh
-GARBLE_LINK_REVERSIBLE=true   # When -reversible is set
-GARBLE_LINK_REVERSIBLE=false  # When -reversible is not set
-```
+`reflectMainPostPatch` leaves the injected mapping array empty on every build, removing any de-obfuscation metadata from the binary.
 
 ### Implementation References
 - `reflect.go`: `reflectMainPostPatch()` - Core logic
-- `main.go`: Flag definition and linker environment setup
 
 ---
 
@@ -811,7 +679,7 @@ func deriveCacheKey(seed []byte) []byte {
 
 ### Activation Conditions
 
-Cache encryption is **enabled by default** when `-no-cache-encrypt` is **not** present. Garble uses the CLI seed if supplied; otherwise it derives a per-build key from the build nonce so entries remain encrypted but cannot be reused across builds without the same nonce.
+Cache encryption is **enabled by default** when `-no-cache-encrypt` is **not** present. Garble uses the CLI seed if supplied; otherwise it generates a random per-build seed, so entries remain encrypted and per-build unique.
 
 ```sh
 # Encrypted cache with explicit seed (reusable entries)
@@ -820,7 +688,7 @@ garble -seed=<base64> build
 # Explicitly disable encryption
 garble -seed=<base64> -no-cache-encrypt build
 
-# Seedless build still encrypted (per-build key from GARBLE_BUILD_NONCE or the generated nonce)
+# Default: random seed per build (encrypted cache)
 garble build
 ```
 
@@ -973,7 +841,8 @@ func hotPath() {
 
 Control-flow obfuscation (implemented in `internal/ctrlflow`):
 1. **Flatten**: Convert structured control flow to flat switch/goto
-2. **Opaque Predicates**: Insert conditions always true/false but hard to analyze
+2. **Hardening prologues**: Dispatcher keys are obfuscated (interleaved slices) and
+   include opaque predicates to slow static recovery.
 3. **Dead Code Injection**: Add unreachable but plausible code paths
 
 ### Current Status
@@ -992,6 +861,7 @@ Control-flow obfuscation can impact:
 - **Binary size**: +5-15% typical increase
 - **Performance**: Variable depending on function complexity
 - **Compilation time**: +10-30% longer builds
+- **Initialization cost**: Hardening prologues add a small amount of extra work per function
 
 **Recommendation**: Use `auto` mode with selective `//garble:nocontrolflow` in hot paths.
 
@@ -1001,6 +871,37 @@ Control-flow obfuscation can impact:
 - `internal/ctrlflow/transform.go`: AST transformation
 - `docs/CONTROLFLOW.md`: Detailed design documentation
 - `main.go`: Flag and environment resolution
+
+---
+
+## 7.1 Operational Hardening Checklist (by build flow)
+
+**Goal:** small, low-risk layers that materially slow static analysis.
+
+### Phase 1: Build Flags & Inputs
+- Use `-literals -tiny -controlflow=auto` on every production build.
+- Keep `-no-cache-encrypt` **off** (default).
+- Leave the seed random for uniqueness; if you must record it, use `-seed=random`.
+- Avoid `-debug` and `-debugdir` in production (they expose structure).
+
+### Phase 2: Package Scope
+- Keep `GOGARBLE='*'` unless you explicitly need to expose public APIs.
+- Avoid or minimize `//go:nosplit`/`//go:noescape` in your own code paths that contain secrets, because they skip literal obfuscation.
+
+### Phase 3: Literal Protection
+- Prefer `-literals` for all shipped binaries; it covers `-ldflags -X` values and normal literals.
+- Rotate seeds periodically for long-lived products to reduce cross-build correlation.
+
+### Phase 4: Control Flow
+- Use `-controlflow=auto` globally, and opt out only with `//garble:nocontrolflow` for verified hot paths.
+
+### Phase 5: Linker/Runtime Metadata
+- Keep `-tiny` enabled to remove runtime metadata and stack traces in shipped builds.
+- Avoid embedding version/build metadata in your own code unless you encrypt it (e.g., via `-literals` or runtime config).
+
+### Phase 6: Cache & Artifacts
+- Leave cache encryption enabled (default) so on-disk artifacts remain protected.
+- If you use CI caches, scope `GARBLE_CACHE` per pipeline or per build group.
 
 ---
 
@@ -1028,7 +929,7 @@ Control-flow obfuscation can impact:
 | **Cross-Build Pattern Matching**       | SHA-256 seed+nonce mixing; cryptographically random nonce per build        | If seed and nonce are fixed (reproducibility), correlation possible | Intentional for deterministic builds                  |
 | **String/Literal Scraping**            | ASCON-128 inline encryption (~60%); multi-layer simple obfuscator (~40%)   | Compile-time-only consts remain in plaintext                        | Remaining gap limited to array lengths / case labels  |
 | **Injected -ldflags Strings**          | CLI sanitization + shared-cache rehydration via literal builder            | Plaintext exists only transiently in garble parent process          | Sanitized flags never reach toolchain or final binary |
-| **Reflection Name Oracle**             | `_originalNamePairs` array empty by default                                | Opting into `-reversible` re-introduces oracle by design            | Security vs. debugging trade-off                      |
+| **Reflection Name Oracle**             | `_originalNamePairs` array is always empty                                 | No opt-in path; oracle removed                                      | No identifier mappings are embedded                  |
 | **Cache Inspection/Tampering**         | ASCON-128 encryption at rest with 128-bit authentication tag               | Shared ephemeral cache plaintext (deleted after build)              | Tag verification prevents poisoning                   |
 | **Known-Plaintext Attack on Literals** | Per-literal random keys/nonces; ASCON authentication                       | Requires recovering per-literal key (infeasible)                    | Each literal independently secured                    |
 | **Brute-Force Key Recovery**           | 128-bit Feistel keyspace; 128-bit ASCON keys                               | Computationally infeasible                                          | Meets NIST security standards                         |
@@ -1119,17 +1020,7 @@ var apiKey = "default"
 
 **Planned**: Advanced const-folding analysis to detect more safe-to-rewrite constants.
 
-#### 2. Irreversible Simple Obfuscator
-
-**Issue**: The "simple" obfuscator currently uses the same reversible algorithm in both modes.
-
-**Current**:
-- `-reversible`: Uses reversible simple (✅ intended)
-- No `-reversible`: Still uses reversible simple (⚠️ should be irreversible)
-
-**Planned**: Implement true one-way simple variant (e.g., hash chains, S-box substitution).
-
-#### 3. Control-Flow Default State
+#### 2. Control-Flow Default State
 
 **Issue**: Control-flow obfuscation is opt-in (default: off).
 
@@ -1140,7 +1031,7 @@ var apiKey = "default"
 2. Develop heuristics for auto-exclusion of hot paths
 3. Consider default-on with smart exclusions
 
-#### 4. Exported Identifiers
+#### 3. Exported Identifiers
 
 **Issue**: Exported names remain unobfuscated.
 
@@ -1150,7 +1041,7 @@ var apiKey = "default"
 
 **Alternative**: Document the trade-off; consider separate "closed-ecosystem" mode in future.
 
-#### 5. Error/Panic Message Leakage
+#### 4. Error/Panic Message Leakage
 
 **Issue**: Error strings and panic messages may reveal implementation details.
 
@@ -1169,7 +1060,6 @@ fmt.Errorf("database %s not found", dbName)
 | Item                                     | Status         | Priority |
 |------------------------------------------|----------------|----------|
 | Improve const expression handling        | 🔄 In Progress | Medium   |
-| Implement irreversible simple obfuscator | 📋 Planned     | High     |
 | Document -ldflags workarounds            | 📋 Planned     | Low      |
 | Performance benchmarks for CF modes      | 📋 Planned     | Medium   |
 
@@ -1198,11 +1088,6 @@ fmt.Errorf("database %s not found", dbName)
 - **Fixed seed+nonce**: Reproducible builds, but correlation possible
 - **Random nonce**: Unique per build, but not reproducible
 - **Choice**: User decides based on requirements (CI/CD vs. anti-correlation)
-
-#### Security vs. Debugging
-- **Default mode**: Maximum security, no `garble reverse`
-- **`-reversible` mode**: Debugging support, reduced security
-- **Choice**: Production uses default; staging uses `-reversible`
 
 #### Performance vs. Obfuscation
 - **Control-flow off**: Fast builds, clear structure
@@ -1240,7 +1125,7 @@ fmt.Errorf("database %s not found", dbName)
 - `internal/literals/ascon.go`: ASCON-128 core implementation
 - `internal/literals/ascon_inline.go`: Inline code generation
 - `internal/literals/ascon_obfuscator.go`: Obfuscator integration
-- `internal/literals/simple.go`: Simple reversible obfuscator
+- `internal/literals/simple.go`: Simple irreversible obfuscator
 - `internal/literals/obfuscators.go`: Selection strategy
 
 #### Reflection
@@ -1266,7 +1151,6 @@ fmt.Errorf("database %s not found", dbName)
 #### Integration Tests
 - `testdata/script/runtime_metadata.txtar`: Runtime metadata
 - `testdata/script/reflect_secure.txtar`: Reflection default mode
-- `testdata/script/reflect_reversible.txtar`: Reflection reversible mode
 - `testdata/script/seed.txtar`: Seed and nonce behavior
 - `testdata/script/ctrlflow_*.txtar`: Control-flow modes
 

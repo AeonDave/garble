@@ -23,6 +23,13 @@ exec garble help -h
 stderr 'usage: garble help'
 ! stdout .
 
+! exec garble reverse
+stderr 'unknown command'
+
+! exec garble -reversible build
+stderr 'flag provided but not defined'
+! stdout .
+
 ! exec garble build -h
 stderr 'garble \[garble flags\] build'
 stderr 'This command wraps "go build"'
@@ -37,16 +44,6 @@ stderr 'This command wraps "go test"'
 stderr 'usage: go test'
 stderr 'Run .go help test.'
 ! stderr 'Garble obfuscates Go code'
-! stdout .
-
-! exec garble reverse -h
-stderr 'garble \[garble flags\] reverse \[build flags\] package \[files\]'
-! stderr 'usage: go '
-! stdout .
-
-! exec garble help reverse
-stderr 'garble \[garble flags\] reverse \[build flags\] package \[files\]'
-! stderr 'usage: go '
 ! stdout .
 
 ! exec garble -badflag

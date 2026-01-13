@@ -15,12 +15,6 @@ stderr -count=1 'broken[/\\]syntax[/\\].*unexpected newline'
 
 [short] stop # no need to verify this with -short
 
-# Ensure that reversing doesn't error with assembly files.
-# It should fail, as there is nothing to reverse, but without any parse error.
-stdin empty-reverse.txt
-! exec garble reverse .
-! stderr .
-
 exec garble -tiny build
 exec ./main
 cmp stderr main.stderr
@@ -154,4 +148,3 @@ TEXT ·AddImpl(SB),$0-16
 13 36
 25 70
 7
--- empty-reverse.txt --
