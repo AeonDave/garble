@@ -1,6 +1,12 @@
 /.idea
 /garble
 /test
-/testfile
+/testfile/
 /bincmp_output/
 debug
+*.log
+*.tmp
+*.out
+*.exe
+*.dll
+*.so
