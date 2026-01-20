@@ -177,6 +177,13 @@ func (tc *TypeConverter) Convert(typ types.Type) (ast.Expr, error) {
 	case *types.Signature:
 		funcSigExpr := &ast.FuncType{Params: &ast.FieldList{}}
 		if sigParams := typ.Params(); sigParams != nil {
+			paramHasNames := false
+			for i := range sigParams.Len() {
+				if sigParams.At(i).Name() != "" {
+					paramHasNames = true
+					break
+				}
+			}
 			for i := range sigParams.Len() {
 				param := sigParams.At(i)
 
@@ -197,13 +204,26 @@ func (tc *TypeConverter) Convert(typ types.Type) (ast.Expr, error) {
 					paramType = paramExpr
 				}
 				f := &ast.Field{Type: paramType}
-				if name := param.Name(); name != "" {
+				name := param.Name()
+				if paramHasNames {
+					if name == "" {
+						name = "arg" + strconv.Itoa(i)
+					}
+					f.Names = []*ast.Ident{ast.NewIdent(name)}
+				} else if name != "" {
 					f.Names = []*ast.Ident{ast.NewIdent(name)}
 				}
 				funcSigExpr.Params.List = append(funcSigExpr.Params.List, f)
 			}
 		}
 		if sigResults := typ.Results(); sigResults != nil {
+			resultHasNames := false
+			for i := range sigResults.Len() {
+				if sigResults.At(i).Name() != "" {
+					resultHasNames = true
+					break
+				}
+			}
 			funcSigExpr.Results = &ast.FieldList{}
 			for i := range sigResults.Len() {
 				result := sigResults.At(i)
@@ -213,7 +233,13 @@ func (tc *TypeConverter) Convert(typ types.Type) (ast.Expr, error) {
 				}
 
 				f := &ast.Field{Type: resultExpr}
-				if name := result.Name(); name != "" {
+				name := result.Name()
+				if resultHasNames {
+					if name == "" {
+						name = "res" + strconv.Itoa(i)
+					}
+					f.Names = []*ast.Ident{ast.NewIdent(name)}
+				} else if name != "" {
 					f.Names = []*ast.Ident{ast.NewIdent(name)}
 				}
 				funcSigExpr.Results.List = append(funcSigExpr.Results.List, f)

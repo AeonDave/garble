@@ -452,7 +452,14 @@ func (fc *funcConverter) ssaValue(ssaValue ssa.Value, explicitNil bool) (expr as
 		// Don't wrap in ParenExpr - causes go/printer to insert /*line :1*/ comments
 		return ah.CallExpr(castExpr, constExpr), nil
 	case *ssa.Parameter, *ssa.FreeVar:
-		return ast.NewIdent(val.Name()), nil
+		if name, ok := fc.valueNameMap[val]; ok && name != "" {
+			return ast.NewIdent(name), nil
+		}
+		name := val.Name()
+		if name == "" {
+			name = fc.getVarName(val)
+		}
+		return ast.NewIdent(name), nil
 	default:
 		return ast.NewIdent(fc.getVarName(val)), nil
 	}
@@ -1134,6 +1141,31 @@ func (fc *funcConverter) convertAnonFuncs(anonFuncs []*ssa.Function) ([]ast.Stmt
 		if err != nil {
 			return nil, err
 		}
+		if anonLit.Type != nil && anonLit.Type.Params != nil {
+			paramStart := 0
+			if anonFunc.Signature != nil && anonFunc.Signature.Recv() != nil && len(anonFunc.Params) > 0 {
+				paramStart = 1
+			}
+			paramCount := len(anonFunc.Params) - paramStart
+			if len(anonLit.Type.Params.List) < paramCount {
+				paramCount = len(anonLit.Type.Params.List)
+			}
+			for i := 0; i < paramCount; i++ {
+				field := anonLit.Type.Params.List[i]
+				name := ""
+				if len(field.Names) > 0 && field.Names[0].Name != "_" {
+					name = field.Names[0].Name
+				}
+				if name == "" || name == "_" {
+					name = anonFunc.Params[paramStart+i].Name()
+					if name == "" {
+						name = "arg" + strconv.Itoa(i)
+					}
+					field.Names = []*ast.Ident{ast.NewIdent(name)}
+				}
+				fc.valueNameMap[anonFunc.Params[paramStart+i]] = name
+			}
+		}
 		anonStmts, err := fc.convertToStmts(anonFunc)
 		if err != nil {
 			return nil, err
@@ -1151,7 +1183,12 @@ func (fc *funcConverter) convertAnonFuncs(anonFuncs []*ssa.Function) ([]ast.Stmt
 
 		var closureVars []*types.Var
 		for _, freeVar := range anonFunc.FreeVars {
-			closureVars = append(closureVars, types.NewVar(fc.tc.BasePos, nil, freeVar.Name(), freeVar.Type()))
+			name := freeVar.Name()
+			if name == "" {
+				name = fc.getVarName(freeVar)
+			}
+			fc.valueNameMap[freeVar] = name
+			closureVars = append(closureVars, types.NewVar(fc.tc.BasePos, nil, name, freeVar.Type()))
 		}
 
 		makeClosureType := types.NewSignatureType(nil, nil, nil, types.NewTuple(closureVars...), types.NewTuple(
@@ -1258,6 +1295,46 @@ func (fc *funcConverter) convert(ssaFunc *ssa.Function) (*ast.FuncDecl, error) {
 	funcDecl, err := fc.convertSignatureToFuncDecl(ssaFunc.Name(), ssaFunc.Signature)
 	if err != nil {
 		return nil, err
+	}
+	paramStart := 0
+	if ssaFunc.Signature != nil && ssaFunc.Signature.Recv() != nil && len(ssaFunc.Params) > 0 {
+		paramStart = 1
+		if funcDecl.Recv != nil && len(funcDecl.Recv.List) > 0 {
+			recvField := funcDecl.Recv.List[0]
+			recvName := ""
+			if len(recvField.Names) > 0 && recvField.Names[0].Name != "_" {
+				recvName = recvField.Names[0].Name
+			}
+			if recvName == "" || recvName == "_" {
+				recvName = ssaFunc.Params[0].Name()
+				if recvName == "" {
+					recvName = "recv"
+				}
+				recvField.Names = []*ast.Ident{ast.NewIdent(recvName)}
+			}
+			fc.valueNameMap[ssaFunc.Params[0]] = recvName
+		}
+	}
+	if funcDecl.Type != nil && funcDecl.Type.Params != nil {
+		paramCount := len(ssaFunc.Params) - paramStart
+		if len(funcDecl.Type.Params.List) < paramCount {
+			paramCount = len(funcDecl.Type.Params.List)
+		}
+		for i := 0; i < paramCount; i++ {
+			field := funcDecl.Type.Params.List[i]
+			name := ""
+			if len(field.Names) > 0 && field.Names[0].Name != "_" {
+				name = field.Names[0].Name
+			}
+			if name == "" || name == "_" {
+				name = ssaFunc.Params[paramStart+i].Name()
+				if name == "" {
+					name = "arg" + strconv.Itoa(i)
+				}
+				field.Names = []*ast.Ident{ast.NewIdent(name)}
+			}
+			fc.valueNameMap[ssaFunc.Params[paramStart+i]] = name
+		}
 	}
 	funcStmts, err := fc.convertToStmts(ssaFunc)
 	if err != nil {

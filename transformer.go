@@ -556,7 +556,22 @@ func (tf *transformer) applyControlFlowTransforms(files *[]*ast.File, paths *[]s
 			typecheckErr = tf.typecheckParsedFiles(*files)
 		}()
 		if typecheckErr != nil {
+			if flagDebugDir != "" && newFile != nil {
+				if src, err := printFile(tf.curPkg, newFile); err != nil {
+					log.Printf("garble: failed to print control-flow file for %s: %v", tf.curPkg.ImportPath, err)
+				} else {
+					pkgDir := filepath.Join(flagDebugDir, filepath.FromSlash(tf.curPkg.ImportPath))
+					if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+						log.Printf("garble: failed to create debugdir for %s: %v", tf.curPkg.ImportPath, err)
+					} else if err := os.WriteFile(filepath.Join(pkgDir, "GARBLE_controlflow_failed.go"), src, 0o666); err != nil {
+						log.Printf("garble: failed to write control-flow debug file for %s: %v", tf.curPkg.ImportPath, err)
+					}
+				}
+			}
 			log.Printf("garble: control-flow disabled for %s after typecheck failure: %v", tf.curPkg.ImportPath, typecheckErr)
+			if tf.curPkg.Name == "main" && reflectPatchFile != "" {
+				reflectPatchFile = ""
+			}
 			parsedFiles, parseErr := tf.parseCompileFiles(origPaths)
 			if parseErr != nil {
 				return nil, nil, parseErr

@@ -190,6 +190,19 @@ func extractControlFlowIntent(doc *ast.CommentGroup) (directiveParamMap, bool, b
 	return params, hasDirective, false
 }
 
+func hasGoDirective(doc *ast.CommentGroup) bool {
+	if doc == nil {
+		return false
+	}
+	for _, comment := range doc.List {
+		text := strings.TrimSpace(comment.Text)
+		if strings.HasPrefix(text, "//go:") {
+			return true
+		}
+	}
+	return false
+}
+
 func eligibleForAuto(funcDecl *ast.FuncDecl) bool {
 	if funcDecl.Body == nil {
 		return false
@@ -396,6 +409,10 @@ func Obfuscate(fset *token.FileSet, ssaPkg *ssa.Package, files []*ast.File, obfR
 			}
 
 			params, hasDirective, skip := extractControlFlowIntent(funcDecl.Doc)
+			if hasGoDirective(funcDecl.Doc) {
+				debugf("%s: skip candidate %s due to go directive", currentPkgPath, funcDecl.Name.Name)
+				continue
+			}
 			if skip || !shouldObfuscate(mode, funcDecl, hasDirective) {
 				if ctrlflowDebug {
 					reason := "mode"
@@ -440,18 +457,22 @@ func Obfuscate(fset *token.FileSet, ssaPkg *ssa.Package, files []*ast.File, obfR
 		return
 	}
 
-	// Check if any candidate would be skipped due to predeclared names.
-	// If so, skip control-flow for the entire package to avoid broken references
-	// and mark this package as skipped for dependent packages.
+	// Filter out candidates with predeclared names instead of skipping the whole package.
+	// This keeps control-flow obfuscation enabled for safe functions while avoiding
+	// SSA→AST issues on problematic signatures.
+	filtered := candidates[:0]
 	for _, candidate := range candidates {
 		if hasPredeclaredNames(candidate.ssaFunc) {
-			debugf("%s: skip package due to predeclared names in %s", currentPkgPath, candidate.ssaFunc.Name())
-			if err := saveSkippedPackage(sharedTempDir, currentPkgPath); err != nil {
-				return "", nil, nil, fmt.Errorf("failed to save skipped package: %v", err)
-			}
-			return
+			debugf("%s: skip candidate %s due to predeclared names", currentPkgPath, candidate.ssaFunc.Name())
+			continue
 		}
+		filtered = append(filtered, candidate)
 	}
+	if len(filtered) == 0 {
+		debugf("%s: all candidates skipped due to predeclared names", currentPkgPath)
+		return
+	}
+	candidates = filtered
 
 	// Now check if this package imports any package that was skipped due to predeclared names
 	// to avoid broken cross-package references
