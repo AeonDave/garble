@@ -283,6 +283,8 @@ type obfRand struct {
 	*mathrand.Rand
 	testObfuscator obfuscator
 
+	disableAsconInterleave bool
+
 	proxyDispatcher    *proxyDispatcher
 	asconHelper        *asconInlineHelper
 	irreversibleHelper *irreversibleInlineHelper
@@ -325,12 +327,12 @@ func (r *obfRand) nextLinearTimeObfuscator() obfuscator {
 	return simpleObfuscator
 }
 
-func newObfRand(rand *mathrand.Rand, file *ast.File, nameFunc NameProviderFunc, keys KeyProvider) *obfRand {
+func newObfRand(rand *mathrand.Rand, file *ast.File, nameFunc NameProviderFunc, keys KeyProvider, disableAsconInterleave bool) *obfRand {
 	if keys == nil {
 		panic("literals: nil key provider for obfuscator")
 	}
 	testObf := testPkgToObfuscatorMap[file.Name.Name]
 	asconHelper := newAsconInlineHelper(rand, nameFunc)
 	irreversibleHelper := newIrreversibleInlineHelper(rand, nameFunc)
-	return &obfRand{rand, testObf, newProxyDispatcher(rand, nameFunc), asconHelper, irreversibleHelper, keys}
+	return &obfRand{rand, testObf, disableAsconInterleave, newProxyDispatcher(rand, nameFunc), asconHelper, irreversibleHelper, keys}
 }

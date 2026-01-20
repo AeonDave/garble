@@ -29,6 +29,9 @@ type NameProviderFunc func(rand *mathrand.Rand, baseName string) string
 
 type BuilderConfig struct {
 	KeyProvider KeyProvider
+	// DisableAsconInterleave skips extra interleaving of ASCON key/nonce/ciphertext
+	// to keep literal obfuscation leaner (useful for -tiny builds).
+	DisableAsconInterleave bool
 }
 
 type Builder struct {
@@ -39,7 +42,7 @@ func NewBuilder(rand *mathrand.Rand, file *ast.File, nameFunc NameProviderFunc, 
 	if cfg.KeyProvider == nil {
 		panic("literals: Builder requires a key provider")
 	}
-	return &Builder{obfRand: newObfRand(rand, file, nameFunc, cfg.KeyProvider)}
+	return &Builder{obfRand: newObfRand(rand, file, nameFunc, cfg.KeyProvider, cfg.DisableAsconInterleave)}
 }
 
 func (b *Builder) ObfuscateFile(file *ast.File, info *types.Info, linkStrings map[*types.Var]string) *ast.File {

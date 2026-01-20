@@ -3,7 +3,6 @@ package literals
 import (
 	"go/ast"
 	"go/token"
-	mathrand "math/rand"
 
 	ah "github.com/AeonDave/garble/internal/asthelper"
 )
@@ -55,10 +54,9 @@ func (a *asconObfuscator) obfuscate(ctx *obfRand, data []byte, extKeys []*extern
 	nonceExpr := bytesToByteSliceLiteral(nonce)
 	cipherExpr := bytesToByteSliceLiteral(ciphertextAndTag)
 
-	// Add an extra obfuscation layer to the embedded key/nonce/ciphertext.
-	// This keeps ASCON as the cryptographic layer while avoiding raw byte arrays
-	// in the binary for these materials.
-	if ctx != nil && ctx.Rand != nil {
+	// Add an extra obfuscation layer to the embedded key/nonce/ciphertext
+	// unless explicitly disabled for faster builds (e.g. -tiny).
+	if ctx != nil && ctx.Rand != nil && !ctx.disableAsconInterleave {
 		keyExpr = dataToInterleavedByteSlice(ctx.Rand, append([]byte(nil), key...), extKeys)
 		nonceExpr = dataToInterleavedByteSlice(ctx.Rand, append([]byte(nil), nonce...), extKeys)
 		cipherExpr = dataToInterleavedByteSlice(ctx.Rand, append([]byte(nil), ciphertextAndTag...), extKeys)
@@ -84,14 +82,16 @@ func (a *asconObfuscator) obfuscate(ctx *obfRand, data []byte, extKeys []*extern
 
 	// Authentication check: if !ok { panic("garble: ASCON authentication failed") }
 	// This should never happen in normal execution, but provides a safety check
-	var panicRand *mathrand.Rand
-	if ctx != nil {
-		panicRand = ctx.Rand
+	var panicMsg ast.Expr = &ast.BasicLit{
+		Kind:  token.STRING,
+		Value: `"garble: literal authentication failed"`,
 	}
-	panicMsgBytes := dataToInterleavedByteSlice(panicRand, []byte("garble: literal authentication failed"), extKeys)
-	panicMsg := &ast.CallExpr{
-		Fun:  ast.NewIdent("string"),
-		Args: []ast.Expr{panicMsgBytes},
+	if ctx != nil && ctx.Rand != nil && !ctx.disableAsconInterleave {
+		panicMsgBytes := dataToInterleavedByteSlice(ctx.Rand, []byte("garble: literal authentication failed"), extKeys)
+		panicMsg = &ast.CallExpr{
+			Fun:  ast.NewIdent("string"),
+			Args: []ast.Expr{panicMsgBytes},
+		}
 	}
 	block.List = append(block.List, &ast.IfStmt{
 		Cond: &ast.UnaryExpr{
@@ -100,9 +100,7 @@ func (a *asconObfuscator) obfuscate(ctx *obfRand, data []byte, extKeys []*extern
 		},
 		Body: ah.BlockStmt(
 			&ast.ExprStmt{
-				X: ah.CallExprByName("panic",
-					panicMsg,
-				),
+				X: ah.CallExprByName("panic", panicMsg),
 			},
 		),
 	})

@@ -1136,14 +1136,14 @@ func (tf *transformer) transformGoFile(file *ast.File, filePath string) *ast.Fil
 	var litBuilder *literals.Builder
 	if flagLiterals && tf.curPkg.ToObfuscate && !tf.skipLiterals {
 		keyProvider := tf.newLiteralKeyProvider(filePath)
-		litBuilder = literals.NewBuilder(tf.obfRand, file, randomName, literals.BuilderConfig{KeyProvider: keyProvider})
+		litBuilder = literals.NewBuilder(tf.obfRand, file, randomName, literals.BuilderConfig{KeyProvider: keyProvider, DisableAsconInterleave: flagTiny})
 		file = litBuilder.ObfuscateFile(file, tf.info, tf.linkerVariableStrings)
 
 		// some imported constants might not be needed anymore, remove unnecessary imports
 		tf.useAllImports(file)
 	} else if len(tf.linkerVariableStrings) > 0 {
 		keyProvider := tf.newLiteralKeyProvider(filePath)
-		litBuilder = literals.NewBuilder(tf.obfRand, file, randomName, literals.BuilderConfig{KeyProvider: keyProvider})
+		litBuilder = literals.NewBuilder(tf.obfRand, file, randomName, literals.BuilderConfig{KeyProvider: keyProvider, DisableAsconInterleave: flagTiny})
 	}
 
 	if litBuilder != nil {

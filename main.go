@@ -552,7 +552,35 @@ This command wraps "go %s". Below is its help:
 	goArgs = append(goArgs, flags...)
 	goArgs = append(goArgs, args...)
 
-	return exec.Command("go", goArgs...), nil
+	cmd := exec.Command("go", goArgs...)
+
+	// Set working directory to enable proper module resolution
+	// If we're building a file path (not a package path), find its module root
+	if len(args) > 0 {
+		firstArg := args[0]
+		// Check if it's a file path (absolute or relative with file extension)
+		if filepath.IsAbs(firstArg) || strings.HasSuffix(firstArg, ".go") {
+			// Start from the directory of the first file
+			startDir := firstArg
+			if filepath.IsAbs(firstArg) {
+				startDir = filepath.Dir(firstArg)
+			} else {
+				// For relative paths, get absolute path first
+				absPath, err := filepath.Abs(firstArg)
+				if err == nil {
+					startDir = filepath.Dir(absPath)
+				}
+			}
+
+			// Find the module root by looking for go.mod
+			modRoot := findModuleRoot(startDir)
+			if modRoot != "" {
+				cmd.Dir = modRoot
+			}
+		}
+	}
+
+	return cmd, nil
 }
 
 type controlFlowFlag struct {

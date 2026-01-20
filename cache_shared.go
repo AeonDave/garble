@@ -284,6 +284,24 @@ func (p *listedPackage) obfuscatedImportPath() string {
 // "go build", "go list", or "go test".
 var garbleBuildFlags = []string{"-trimpath", "-buildvcs=false"}
 
+// findModuleRoot searches for go.mod starting from dir and walking up the directory tree
+func findModuleRoot(dir string) string {
+	dir = filepath.Clean(dir)
+	for {
+		goModPath := filepath.Join(dir, "go.mod")
+		if _, err := os.Stat(goModPath); err == nil {
+			return dir
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			// Reached the root
+			return ""
+		}
+		dir = parent
+	}
+}
+
 // appendListedPackages gets information about the current package
 // and all of its dependencies
 func appendListedPackages(packages []string, mainBuild bool) error {
@@ -317,8 +335,38 @@ func appendListedPackages(packages []string, mainBuild bool) error {
 	args = append(args, packages...)
 	cmd := exec.Command(sharedCache.GoCmd, args...)
 
+	// Set working directory to enable proper module resolution
+	// If we're listing a file path (not a package path), find its module root
+	if mainBuild && len(packages) > 0 {
+		firstPkg := packages[0]
+		// Check if it's a file path (absolute or relative with file extension)
+		if filepath.IsAbs(firstPkg) || strings.HasSuffix(firstPkg, ".go") {
+			// Start from the directory of the first file
+			startDir := firstPkg
+			if filepath.IsAbs(firstPkg) {
+				startDir = filepath.Dir(firstPkg)
+			} else {
+				// For relative paths, get absolute path first
+				absPath, err := filepath.Abs(firstPkg)
+				if err == nil {
+					startDir = filepath.Dir(absPath)
+				}
+			}
+
+			// Find the module root by looking for go.mod
+			modRoot := findModuleRoot(startDir)
+			if modRoot != "" {
+				cmd.Dir = modRoot
+			}
+		}
+	}
+
 	defer func() {
-		log.Printf("original build info obtained in %s via: go %s", debugSince(startTime), strings.Join(args, " "))
+		if cmd.Dir != "" {
+			log.Printf("original build info obtained in %s via: go %s (dir: %s)", debugSince(startTime), strings.Join(args, " "), cmd.Dir)
+		} else {
+			log.Printf("original build info obtained in %s via: go %s", debugSince(startTime), strings.Join(args, " "))
+		}
 	}()
 
 	stdout, err := cmd.StdoutPipe()

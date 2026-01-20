@@ -231,6 +231,19 @@ anti-virus scans incorrectly treating Go binaries as malware.
 
 The full matrix of switches, defaults, and automatic flags is documented in [docs/FEATURE_TOGGLES.md](docs/FEATURE_TOGGLES.md).
 
+#### Flag effects matrix (what you gain / what you lose)
+
+| Flag | What you gain | What you lose / trade-offs | Notes |
+|---|---|---|---|
+| `-literals` | Literal protection (strings and numeric literals, incl. `[]byte`/`[N]byte` data) via ASCON-128 or multi-layer obfuscation | Small runtime cost per literal (decrypt + zeroize); some code size increase | Certain compile-time constants must remain in plaintext (array sizes, `case` labels, `iota` math). Packages with `//go:nosplit`/`//go:noescape` etc. skip literal obfuscation for safety (logged). |
+| `-controlflow=off` | Fastest build and runtime | No control-flow obfuscation | Default. |
+| `-controlflow=directives` | Targeted CF obfuscation where you opt-in via `//garble:controlflow` | You must annotate functions manually | Use for hotspot control and minimal overhead. |
+| `-controlflow=auto` | Broad CF obfuscation with safe auto-detection | Higher build time and runtime overhead in obfuscated functions | Skip with `//garble:nocontrolflow` for critical paths. |
+| `-controlflow=all` | Maximum CF obfuscation coverage | Highest build time / runtime overhead; more aggressive transformations | Even with `all`, `//garble:nocontrolflow` still skips. |
+| `-tiny` | Smaller binaries; strips file/line metadata and runtime panic/trace printing | Stack traces become useless; runtime panic output removed; `GODEBUG` ignored | Also reduces symbol/position visibility; does not disable `-literals` or `-controlflow`. |
+| `-seed` | Deterministic obfuscation (reproducible builds) | Identical outputs if seed+nonce fixed | Use `-seed=random` to print a new seed; set `GARBLE_BUILD_NONCE` for full reproducibility. |
+| `-no-cache-encrypt` | Faster cache access in some environments | Cache contents are stored in plaintext | Does not affect obfuscation quality of final binaries. |
+
 ### Literal obfuscation
 
 Using the `-literals` flag causes literal expressions such as strings to be
