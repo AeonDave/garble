@@ -34,7 +34,11 @@ func rotateRight(x uint64, n int) uint64 {
 // asconPermutation performs the ASCON permutation with 'rounds' rounds
 // This is the core cryptographic primitive of ASCON
 func (s *asconState) permute(rounds int) {
-	for i := 0; i < rounds; i++ {
+	// ASCON uses 12 round constants c_0..c_11 where c_i = (15-i)*0x11.
+	// p^a with 'a' rounds uses constants c_{12-a} through c_{11}.
+	// For p^12: rounds 0..11  (constants 0xf0, 0xe1, ..., 0x4b)
+	// For p^6:  rounds 6..11  (constants 0x96, 0x87, ..., 0x4b)
+	for i := 12 - rounds; i < 12; i++ {
 		// Addition of round constant
 		s[2] ^= uint64(0xf0 - uint64(i)*0x10 + uint64(i)*0x1)
 

@@ -45,7 +45,7 @@ func %s(key, nonce, ciphertextAndTag []byte) ([]byte, bool) {
 	}
 	
 	%s := func(s *[5]uint64, rounds int) {
-		for i := 0; i < rounds; i++ {
+		for i := 12 - rounds; i < 12; i++ {
 			s[2] ^= uint64(0xf0 - uint64(i)*0x10 + uint64(i)*0x1)
 			s[0] ^= s[4]
 			s[4] ^= s[3]

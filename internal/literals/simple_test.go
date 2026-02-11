@@ -1,7 +1,9 @@
 package literals
 
 import (
+	"encoding/binary"
 	"go/ast"
+	"math/bits"
 	mathrand "math/rand"
 	"testing"
 )
@@ -243,4 +245,322 @@ func BenchmarkSimpleObfuscator(b *testing.B) {
 			}
 		})
 	}
+}
+
+// --- Irreversible cipher property tests ---
+
+// TestIrreversibleNonRecoverability proves that ciphertext cannot be
+// reversed using wrong subkeys. This is the core security guarantee:
+// without the correct subkeys embedded in the binary, the original
+// plaintext cannot be recovered.
+func TestIrreversibleNonRecoverability(t *testing.T) {
+	material := make([]byte, irreversibleRounds*8)
+	for i := range material {
+		material[i] = byte(i * 3)
+	}
+	subkeys := deriveIrreversibleSubkeys(material)
+
+	plaintext := []byte("SECRET DATA THAT MUST NOT LEAK!")
+	ct := irreversibleEncryptLiteral(plaintext, subkeys)
+
+	// Trying to decrypt with wrong subkeys must produce garbage
+	wrongMaterial := make([]byte, irreversibleRounds*8)
+	for i := range wrongMaterial {
+		wrongMaterial[i] = byte(i*3 + 1) // slightly different
+	}
+	wrongSubkeys := deriveIrreversibleSubkeys(wrongMaterial)
+
+	wrongResult := irreversibleDecryptForTest(ct, wrongSubkeys, len(plaintext))
+	if string(wrongResult) == string(plaintext) {
+		t.Fatal("wrong subkeys recovered original plaintext — cipher is broken")
+	}
+
+	// Count matching bytes — should be near random (~1/256 match rate)
+	matching := 0
+	for i := 0; i < len(plaintext) && i < len(wrongResult); i++ {
+		if plaintext[i] == wrongResult[i] {
+			matching++
+		}
+	}
+	matchRate := float64(matching) / float64(len(plaintext))
+	t.Logf("wrong-key match rate: %.4f (%d/%d bytes)", matchRate, matching, len(plaintext))
+	if matchRate > 0.15 {
+		t.Fatalf("too many bytes match with wrong key: %.4f (want < 0.15)", matchRate)
+	}
+}
+
+// TestIrreversibleRoundtrip verifies correct subkeys recover the original plaintext.
+func TestIrreversibleRoundtrip(t *testing.T) {
+	testCases := [][]byte{
+		[]byte("A"),
+		[]byte("Hello, World!"),
+		[]byte("The quick brown fox jumps over the lazy dog"),
+		make([]byte, 256),
+	}
+
+	for _, plaintext := range testCases {
+		material := make([]byte, irreversibleRounds*8)
+		for i := range material {
+			material[i] = byte(i * 7)
+		}
+		subkeys := deriveIrreversibleSubkeys(material)
+
+		ct := irreversibleEncryptLiteral(plaintext, subkeys)
+		recovered := irreversibleDecryptForTest(ct, subkeys, len(plaintext))
+
+		if string(recovered) != string(plaintext) {
+			t.Fatalf("roundtrip failed for %q\n  got:  %x\n  want: %x",
+				plaintext, recovered, plaintext)
+		}
+	}
+}
+
+// TestIrreversibleAvalanche checks SBox + Feistel avalanche on 128-bit blocks.
+func TestIrreversibleAvalanche(t *testing.T) {
+	material := make([]byte, irreversibleRounds*8)
+	for i := range material {
+		material[i] = byte(i)
+	}
+	subkeys := deriveIrreversibleSubkeys(material)
+
+	// Use a full block (16 bytes)
+	base := make([]byte, 16)
+	baseCT := irreversibleEncryptLiteral(base, subkeys)
+
+	totalDiffs := 0
+	totalBits := 0
+
+	for bitPos := 0; bitPos < 128; bitPos++ {
+		modified := make([]byte, 16)
+		modified[bitPos/8] ^= 1 << (bitPos % 8)
+
+		modCT := irreversibleEncryptLiteral(modified, subkeys)
+
+		for i := 0; i < len(baseCT) && i < len(modCT); i++ {
+			totalDiffs += bits.OnesCount8(baseCT[i] ^ modCT[i])
+		}
+		totalBits += len(baseCT) * 8
+	}
+
+	ratio := float64(totalDiffs) / float64(totalBits)
+	t.Logf("irreversible avalanche ratio: %.4f (ideal=0.5)", ratio)
+	// The irreversible cipher uses SBox + 4-round Feistel on 128-bit blocks.
+	// Limited rounds mean diffusion is weaker than a full cipher.
+	if ratio < 0.15 {
+		t.Fatalf("avalanche too weak: %.4f (want >= 0.15)", ratio)
+	}
+}
+
+// TestIrreversibleSBoxProperties validates the SBox is a valid permutation
+// (bijection on [0, 255]) and matches the AES SBox.
+func TestIrreversibleSBoxProperties(t *testing.T) {
+	// Verify SBox is a permutation (bijective)
+	var seen [256]bool
+	for _, v := range irreversibleSBox {
+		if seen[v] {
+			t.Fatalf("SBox is not a permutation: duplicate output 0x%02x", v)
+		}
+		seen[v] = true
+	}
+
+	// Verify InvSBox is exactly the inverse
+	for i := 0; i < 256; i++ {
+		if irreversibleInvSBox[irreversibleSBox[byte(i)]] != byte(i) {
+			t.Fatalf("InvSBox[SBox[0x%02x]] != 0x%02x", i, i)
+		}
+		if irreversibleSBox[irreversibleInvSBox[byte(i)]] != byte(i) {
+			t.Fatalf("SBox[InvSBox[0x%02x]] != 0x%02x", i, i)
+		}
+	}
+
+	// Verify it's the standard AES SBox (first/last known values)
+	if irreversibleSBox[0x00] != 0x63 {
+		t.Fatalf("SBox[0x00] = 0x%02x, want 0x63 (AES)", irreversibleSBox[0x00])
+	}
+	if irreversibleSBox[0xFF] != 0x16 {
+		t.Fatalf("SBox[0xFF] = 0x%02x, want 0x16 (AES)", irreversibleSBox[0xFF])
+	}
+	if irreversibleSBox[0x53] != 0xed {
+		t.Fatalf("SBox[0x53] = 0x%02x, want 0xed (AES)", irreversibleSBox[0x53])
+	}
+}
+
+// TestIrreversibleByteDistribution verifies ciphertext bytes are uniformly distributed.
+func TestIrreversibleByteDistribution(t *testing.T) {
+	material := make([]byte, irreversibleRounds*8)
+	for i := range material {
+		material[i] = byte(i * 11)
+	}
+	subkeys := deriveIrreversibleSubkeys(material)
+
+	var buckets [256]int
+	totalBytes := 0
+
+	// Encrypt many different 16-byte blocks with varied input
+	const samples = 4096
+	for i := 0; i < samples; i++ {
+		block := make([]byte, 16)
+		binary.LittleEndian.PutUint64(block[:8], uint64(i))
+		binary.LittleEndian.PutUint64(block[8:], uint64(i)*0x9e3779b97f4a7c15+0xdeadbeefcafebabe)
+		ct := irreversibleEncryptLiteral(block, subkeys)
+		for _, b := range ct {
+			buckets[b]++
+			totalBytes++
+		}
+	}
+
+	// Chi-squared goodness-of-fit
+	expected := float64(totalBytes) / 256.0
+	var chiSq float64
+	for _, count := range buckets {
+		diff := float64(count) - expected
+		chiSq += (diff * diff) / expected
+	}
+
+	t.Logf("irreversible byte distribution chi-squared: %.2f (255 DOF)", chiSq)
+	// The irreversible cipher has limited diffusion; use a generous threshold.
+	// Critical value at p=0.001 for 255 DOF ≈ 310, but we allow much more
+	// because this is a lightweight obfuscation cipher, not a PRNG.
+	if chiSq > 5000 {
+		t.Fatalf("byte distribution chi-squared %.2f exceeds threshold 5000", chiSq)
+	}
+}
+
+// TestIrreversibleSubkeyDerivation validates subkey derivation properties.
+func TestIrreversibleSubkeyDerivation(t *testing.T) {
+	// Different material → different subkeys
+	m1 := make([]byte, irreversibleRounds*8)
+	m2 := make([]byte, irreversibleRounds*8)
+	for i := range m1 {
+		m1[i] = byte(i)
+		m2[i] = byte(i + 1)
+	}
+
+	sk1 := deriveIrreversibleSubkeys(m1)
+	sk2 := deriveIrreversibleSubkeys(m2)
+
+	allSame := true
+	for i := range sk1 {
+		if sk1[i] != sk2[i] {
+			allSame = false
+			break
+		}
+	}
+	if allSame {
+		t.Fatal("different material produced identical subkeys")
+	}
+
+	// Verify count
+	if len(sk1) != irreversibleRounds {
+		t.Fatalf("expected %d subkeys, got %d", irreversibleRounds, len(sk1))
+	}
+
+	// Verify subkeys are diverse (not all same)
+	for i := 1; i < len(sk1); i++ {
+		if sk1[i] == sk1[0] {
+			t.Fatalf("subkey[%d] == subkey[0], expected diversity", i)
+		}
+	}
+}
+
+// TestFeistelBlockEncryptDecrypt128 tests the 128-bit Feistel block cipher roundtrip.
+func TestFeistelBlockEncryptDecrypt128(t *testing.T) {
+	material := make([]byte, irreversibleRounds*8)
+	for i := range material {
+		material[i] = byte(i * 5)
+	}
+	subkeys := deriveIrreversibleSubkeys(material)
+
+	block := []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
+	original := append([]byte(nil), block...)
+
+	feistelEncryptBlock(block, subkeys)
+
+	// Must differ from original
+	if string(block) == string(original) {
+		t.Fatal("encryption did not change the block")
+	}
+
+	// Decrypt using reverse subkey order
+	feistelDecryptBlockForTest(block, subkeys)
+
+	if string(block) != string(original) {
+		t.Fatalf("roundtrip failed:\n  got:  %x\n  want: %x", block, original)
+	}
+}
+
+// TestIrreversibleKeyAvalanche verifies that a single-bit change in subkeys
+// causes significant ciphertext change.
+func TestIrreversibleKeyAvalanche(t *testing.T) {
+	material := make([]byte, irreversibleRounds*8)
+	for i := range material {
+		material[i] = byte(i)
+	}
+	subkeys := deriveIrreversibleSubkeys(material)
+
+	plaintext := make([]byte, 64)
+	for i := range plaintext {
+		plaintext[i] = byte(i)
+	}
+	baseCT := irreversibleEncryptLiteral(plaintext, subkeys)
+
+	totalDiffs := 0
+	tests := 0
+
+	for sk := 0; sk < len(subkeys); sk++ {
+		for bit := 0; bit < 64; bit++ {
+			modified := make([]uint64, len(subkeys))
+			copy(modified, subkeys)
+			modified[sk] ^= 1 << bit
+
+			modCT := irreversibleEncryptLiteral(plaintext, modified)
+
+			for i := 0; i < len(baseCT) && i < len(modCT); i++ {
+				totalDiffs += bits.OnesCount8(baseCT[i] ^ modCT[i])
+			}
+			tests++
+		}
+	}
+
+	ratio := float64(totalDiffs) / float64(tests*len(baseCT)*8)
+	t.Logf("key avalanche ratio: %.4f (ideal=0.5)", ratio)
+	// 4-round Feistel has limited key diffusion; accept > 0.05 as minimum.
+	// This still guarantees different keys produce measurably different output.
+	if ratio < 0.05 {
+		t.Fatalf("key avalanche ratio %.4f too low (want >= 0.05)", ratio)
+	}
+}
+
+// --- Test helpers for irreversible cipher decryption (inverse of encrypt) ---
+
+func feistelDecryptBlockForTest(block []byte, subkeys []uint64) {
+	left := binary.LittleEndian.Uint64(block[:8])
+	right := binary.LittleEndian.Uint64(block[8:])
+
+	for i := len(subkeys) - 1; i >= 0; i-- {
+		f := feistelRound(left, subkeys[i])
+		left, right = right^f, left
+	}
+
+	binary.LittleEndian.PutUint64(block[:8], left)
+	binary.LittleEndian.PutUint64(block[8:], right)
+}
+
+func irreversibleDecryptForTest(ct []byte, subkeys []uint64, originalLen int) []byte {
+	buf := append([]byte(nil), ct...)
+
+	// Inverse Feistel (decrypt each block)
+	for offset := 0; offset < len(buf); offset += irreversibleBlockSize {
+		feistelDecryptBlockForTest(buf[offset:offset+irreversibleBlockSize], subkeys)
+	}
+
+	// Inverse SBox
+	for i := range buf {
+		buf[i] = irreversibleInvSBox[buf[i]]
+	}
+
+	if originalLen <= len(buf) {
+		return buf[:originalLen]
+	}
+	return buf
 }

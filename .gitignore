@@ -1,4 +1,5 @@
 /.idea
+/.venv
 /testfile/test_b/garble
 /test
 /testfile/
@@ -10,4 +11,4 @@ debug
 *.exe
 *.dll
 *.so
-/garble
+garble
