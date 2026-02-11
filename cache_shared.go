@@ -171,6 +171,8 @@ type listedPackage struct {
 
 	Error *packageError // to report package loading errors to the user
 
+	Module *listedModule
+
 	// The fields below are not part of 'go list', but are still reused
 	// between garble processes. Use "Garble" as a prefix to ensure no
 	// collisions with the JSON fields from 'go list'.
@@ -221,6 +223,12 @@ func (p *listedPackage) addImportsFrom(from *listedPackage) {
 type packageError struct {
 	Pos string
 	Err string
+}
+
+type listedModule struct {
+	Path string
+	Main bool
+	Dir  string
 }
 
 // obfuscatedPackageName returns a package's obfuscated package name,
