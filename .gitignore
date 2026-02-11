@@ -10,3 +10,4 @@ debug
 *.exe
 *.dll
 *.so
+/garble

@@ -63,6 +63,8 @@ func TestIsSafeInstanceType(t *testing.T) {
 
 type plain string
 
+type plainStruct struct{ Value int }
+
 type box[T any] struct{}
 
 type iface interface{}
@@ -76,6 +78,7 @@ func generic[T any]() {}
 	pkg, _ := typecheckFixture(t, "example.com/sample", src)
 
 	plain := pkg.Scope().Lookup("plain").Type()
+	plainStruct := pkg.Scope().Lookup("plainStruct").Type()
 	box := pkg.Scope().Lookup("box").Type()
 	iface := pkg.Scope().Lookup("iface").Type()
 	ifaceWithMethod := pkg.Scope().Lookup("ifaceWithMethod").Type()
@@ -88,6 +91,7 @@ func generic[T any]() {}
 		expected bool
 	}{
 		{"basic", plain, true},
+		{"pointer", types.NewPointer(plainStruct), true},
 		{"generic struct", box, false},
 		{"empty interface", iface, true},
 		{"method interface", ifaceWithMethod, true},
@@ -116,10 +120,12 @@ type alias = named
 
 	namedType := namedObj.Type()
 	ptrType := types.NewPointer(namedType)
+	aliasPtr := types.NewPointer(aliasObj.Type())
 
 	qt.Assert(t, qt.Equals(typesutil.NamedType(namedType), namedObj))
 	qt.Assert(t, qt.Equals(typesutil.NamedType(ptrType), namedObj))
 	qt.Assert(t, qt.Equals(typesutil.NamedType(aliasObj.Type()), aliasObj))
+	qt.Assert(t, qt.Equals(typesutil.NamedType(aliasPtr), aliasObj))
 	qt.Assert(t, qt.IsNil(typesutil.NamedType(types.Typ[types.Int])))
 }
 
@@ -128,7 +134,11 @@ func TestIsTestSignature(t *testing.T) {
 
 import "testing"
 
+type AliasT = testing.T
+
 func good(t *testing.T) {}
+
+func aliasParam(t *AliasT) {}
 
 func wrongParam(t string) {}
 
@@ -141,13 +151,40 @@ func (receiver) method(t *testing.T) {}
 	pkg, _ := typecheckFixture(t, "example.com/sample", src)
 
 	good := pkg.Scope().Lookup("good").(*types.Func).Type().(*types.Signature)
+	aliasParam := pkg.Scope().Lookup("aliasParam").(*types.Func).Type().(*types.Signature)
 	wrongParam := pkg.Scope().Lookup("wrongParam").(*types.Func).Type().(*types.Signature)
 	twoParams := pkg.Scope().Lookup("twoParams").(*types.Func).Type().(*types.Signature)
 	recv := pkg.Scope().Lookup("receiver").Type().(*types.Named)
 	methodSig := recv.Method(0).Type().(*types.Signature)
 
 	qt.Assert(t, qt.IsTrue(typesutil.IsTestSignature(good)))
+	qt.Assert(t, qt.IsFalse(typesutil.IsTestSignature(aliasParam)))
 	qt.Assert(t, qt.IsFalse(typesutil.IsTestSignature(wrongParam)))
 	qt.Assert(t, qt.IsFalse(typesutil.IsTestSignature(twoParams)))
 	qt.Assert(t, qt.IsFalse(typesutil.IsTestSignature(methodSig)))
+}
+
+func TestFieldToStructWithTypeParams(t *testing.T) {
+	src := `package sample
+
+type generic[T any] struct {
+	Value T
+	Count int
+}
+
+type wrapper struct {
+	*generic[int]
+	Field string
+}
+`
+	pkg, info := typecheckFixture(t, "example.com/sample", src)
+	fieldToStruct := typesutil.FieldToStruct(info)
+
+	genericStruct := pkg.Scope().Lookup("generic").Type().(*types.Named).Underlying().(*types.Struct)
+	wrapperStruct := pkg.Scope().Lookup("wrapper").Type().Underlying().(*types.Struct)
+
+	qt.Assert(t, qt.Equals(fieldToStruct[genericStruct.Field(0)], genericStruct))
+	qt.Assert(t, qt.Equals(fieldToStruct[genericStruct.Field(1)], genericStruct))
+	qt.Assert(t, qt.Equals(fieldToStruct[wrapperStruct.Field(0)], wrapperStruct))
+	qt.Assert(t, qt.Equals(fieldToStruct[wrapperStruct.Field(1)], wrapperStruct))
 }

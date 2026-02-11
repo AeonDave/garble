@@ -669,7 +669,18 @@ func Obfuscate(fset *token.FileSet, ssaPkg *ssa.Package, files []*ast.File, obfR
 			continue
 		}
 		if len(prologues) > 0 {
-			astFunc.Body.List = append(prologues, astFunc.Body.List...)
+			// Unwrap BlockStmt prologues so that variables declared with :=
+			// (e.g. hardening local keys) are in the function scope rather
+			// than a nested block scope where the dispatcher can't see them.
+			var flat []ast.Stmt
+			for _, p := range prologues {
+				if bs, ok := p.(*ast.BlockStmt); ok {
+					flat = append(flat, bs.List...)
+				} else {
+					flat = append(flat, p)
+				}
+			}
+			astFunc.Body.List = append(flat, astFunc.Body.List...)
 		}
 		newFile.Decls = append(newFile.Decls, astFunc)
 

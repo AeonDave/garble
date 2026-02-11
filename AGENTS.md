@@ -11,6 +11,9 @@ This Agents.md file provides comprehensive guidance for AI agents working with t
 - `/internal`: Internal packages that AI agents should analyze deeply
   - `/literals`: Literal obfuscation strategies (ASCON-128, simple obfuscators) that AI agents should understand for encryption features
   - `/ctrlflow`: Control-flow obfuscation with jump tables and dead code injection
+    - `ctrlflow.go`: Auto vs all behavior and package/function eligibility rules
+    - `transform.go`, `ssa.go`: SSA control-flow transforms and low-level helpers
+    - `trash.go`, `hardening.go`: Trash generation and dispatcher hardening
   - `/cache`: Cache encryption and management for build reproducibility
   - `/linker`: Linker patches and modifications for Go toolchain integration
   - `/pipeline`: Build pipeline orchestration that AI agents should follow
@@ -18,6 +21,15 @@ This Agents.md file provides comprehensive guidance for AI agents working with t
 - `/docs`: Documentation that AI agents should reference for feature understanding
 - `/scripts`: Build and utility scripts that AI agents may need to run or modify
 - `/testdata`: Test fixtures and data that AI agents should use for validation
+
+## Available Skills
+
+AI agents can leverage specialized skills for different tasks:
+
+- [@skill golang-concurrency-patterns](golang-concurrency-patterns/SKILL.md) - Master Go concurrency with goroutines, channels, sync primitives, and context
+- [@skill golang-patterns](golang-patterns/SKILL.md) - Idiomatic Go patterns, best practices, and conventions
+- [@skill golang-performance](golang-performance/SKILL.md) - Profiling, benchmarking, and optimization techniques
+- [@skill golang-testing](golang-testing/SKILL.md) - Go testing patterns including table-driven tests, subtests, benchmarks, and fuzzing
 
 ## Coding Conventions for AI Agent Implementation
 
@@ -43,6 +55,16 @@ This Agents.md file provides comprehensive guidance for AI agents working with t
 - AI agents should ensure deterministic builds when seeds are provided
 - Follow the security principles documented in docs/SECURITY.md
 
+## Control-flow Guidance for AI Agents
+
+- `controlflow=auto` is conservative and should stay stable by default.
+  - Hard skips always apply: critical stdlib (`runtime`, `syscall`, `unsafe`, `golang.org/*`) and cgo packages.
+  - Soft skips for auto: functions with `//go:` directives and bound method closures.
+  - Predeclared names are now allowed in auto.
+- `controlflow=all` is for broader coverage and experimentation; keep it permissive where safe.
+- Use `GARBLE_CONTROLFLOW_DEBUG=1` to get skip reasons in logs.
+- Prefer adding tests in `internal/ctrlflow/*_test.go` when changing control-flow behavior.
+
 ## Testing Requirements for AI Agent Code
 
 AI agents should run tests with the following commands:
@@ -53,6 +75,9 @@ go test ./...
 
 # Run specific package tests with AI agent
 go test ./internal/literals
+
+# Run control-flow specific tests
+go test ./internal/ctrlflow
 
 # Run tests with race detection for AI agent concurrency code
 go test -race ./...

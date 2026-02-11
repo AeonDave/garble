@@ -296,12 +296,13 @@ func (r *obfRand) nextObfuscator() obfuscator {
 		return r.testObfuscator
 	}
 
-	// Use ASCON obfuscator with higher probability for better security
-	// 60% ASCON, 40% other obfuscators
-	if r.Float32() < 0.6 {
-		return newAsconObfuscator(r.asconHelper, r.keyProvider)
-	}
-
+	// ASCON is excluded from random selection: its inline ciphertext embedding
+	// (interleaved byte slices for key, nonce, and ciphertext) generates
+	// O(n) AST nodes per literal, causing compilation time to explode when
+	// applied at high probability across many packages (e.g. "build std").
+	// The lightweight obfuscators provide equivalent protection with minimal
+	// compile-time overhead. ASCON remains available for explicit/targeted use
+	// and can be re-enabled here at low probability if AST generation is optimized.
 	if obf := pickGeneralStrategy(r.Rand); obf != nil {
 		return obf
 	}
@@ -314,12 +315,11 @@ func (r *obfRand) nextLinearTimeObfuscator() obfuscator {
 		return r.testObfuscator
 	}
 
-	// For large literals, prefer ASCON for security
-	// ASCON has linear time complexity and provides authenticated encryption
-	if r.Float32() < 0.7 {
-		return newAsconObfuscator(r.asconHelper, r.keyProvider)
-	}
-
+	// ASCON is excluded for large literals: its inline ciphertext embedding
+	// generates AST nodes proportional to input size, making the Go compiler
+	// extremely slow on 128KB+ inputs. ASCON remains available for explicit use
+	// and can be re-enabled if AST generation is optimized (e.g. file-based
+	// ciphertext instead of inline byte slices).
 	if obf := pickLinearStrategy(r.Rand); obf != nil {
 		return obf
 	}
