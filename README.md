@@ -317,6 +317,90 @@ Recent releases focus on raising the bar for reverse engineers while keeping the
 
 Want the deep dive? See [docs/LITERAL_ENCRYPTION.md](docs/LITERAL_ENCRYPTION.md) for literal internals and [docs/SECURITY.md](docs/SECURITY.md) for the broader threat model.
 
+### Hardening pipeline
+
+The diagram below shows the full obfuscation flow when all hardening flags are active
+(`-literals -tiny -controlflow=all`). Each stage applies independently; skipping a
+flag disables only its branch.
+
+```
+                    ┌──────────────────────────┐
+                    │     Go Source Files       │
+                    └────────────┬─────────────┘
+                                 │
+                    ┌────────────▼─────────────┐
+                    │   Parse & Type-check     │
+                    │   (go/parser + go/types) │
+                    └────────────┬─────────────┘
+                                 │
+              ┌──────────────────┼──────────────────┐
+              ▼                  ▼                   ▼
+   ┌──────────────────┐ ┌───────────────┐ ┌─────────────────┐
+   │  Name Hashing    │ │  -literals    │ │  -controlflow   │
+   │ ─────────────────│ │ ──────────────│ │ ────────────────│
+   │ SHA-256 + seed   │ │ HKDF-SHA256   │ │ SSA transform   │
+   │ + per-build nonce│ │ key derivation│ │ jump tables     │
+   │ base64 6-12 char │ │      │        │ │ dead code inject│
+   │ export-preserving│ │      ▼        │ │ opaque predicate│
+   └──────────────────┘ │ ┌───────────┐ │ │ XOR dispatcher  │
+                         │ │ Strategy  │ │ │ delegate tables │
+                         │ │ Selection │ │ └─────────────────┘
+                         │ └─┬───────┬─┘ │
+                         │   │       │   │
+                         │   ▼       ▼   │
+                         │ ASCON  Irrev. │
+                         │ -128   SBox+  │
+                         │ AEAD   Feistel│
+                         │   │       │   │
+                         │   ▼       ▼   │
+                         │ Key hardening │
+                         │ interleave +  │
+                         │ external keys │
+                         │ + zeroization │
+                         └───────┬───────┘
+                                 │
+                    ┌────────────▼─────────────┐
+                    │  Position Obfuscation     │
+                    │  filenames → hashes       │
+                    │  (-tiny: removed entirely)│
+                    └────────────┬─────────────┘
+                                 │
+                    ┌────────────▼─────────────┐
+                    │  Linker Patches           │
+                    │  strip symbols (-s)       │
+                    │  strip DWARF  (-w)        │
+                    │  drop build ID            │
+                    │  Feistel symbol table     │
+                    └────────────┬─────────────┘
+                                 │
+                    ┌────────────▼─────────────┐
+                    │  Cache Encryption         │
+                    │  ASCON-128 AEAD           │
+                    │  SHA-256 derived keys     │
+                    └────────────┬─────────────┘
+                                 │
+                    ┌────────────▼─────────────┐
+                    │   Hardened Binary         │
+                    └──────────────────────────┘
+```
+
+### Hardening subsystems
+
+| # | Subsystem | Algorithm | Purpose | Test coverage |
+|---|-----------|-----------|---------|---------------|
+| 1 | **Name hashing** | SHA-256 + seed + nonce → base64 | Replace identifiers with irreversible hashes; export-preserving | Collision resistance, export preservation, length distribution |
+| 2 | **Literal encryption (ASCON)** | ASCON-128 AEAD (NIST LWC winner) | Encrypt string/byte/numeric literals at compile time; inline decrypt at runtime | NIST KAT vectors, forgery resistance, avalanche, fuzz roundtrip |
+| 3 | **Literal encryption (Irreversible)** | AES S-Box + 128-bit Feistel (4 rounds) | Lightweight obfuscation for small literals | SBox bijectivity, roundtrip, non-recoverability, byte distribution |
+| 4 | **Key derivation** | HKDF-SHA256 (RFC 5869) | Per-literal unique keys with context separation (`ascon:v1` / `irreversible:v1`) | Counter monotonicity, cross-file/salt independence, determinism |
+| 5 | **Key hardening** | Interleave + external-key XOR + zeroize | Prevent raw key/nonce/ciphertext from appearing in binary | AST structure tests, external key ref tracking |
+| 6 | **Control-flow flattening** | SSA → jump table dispatch | Replace structured control flow with opaque dispatcher | Semantic preservation, mode selection, hardening prologues |
+| 7 | **Dispatcher hardening** | XOR keys + opaque predicates + delegate tables | Resist static dispatcher recovery | Prologue scope tests, dead code injection |
+| 8 | **Position obfuscation** | SHA-256 hash / full removal (`-tiny`) | Remove or hash file names and line numbers | Position stripping via testscripts |
+| 9 | **Symbol table encryption** | 32-bit Feistel (4 rounds, tweaked) | Encrypt runtime symbol name offsets | Bijection, avalanche, distribution, key independence |
+| 10 | **Cache encryption** | ASCON-128 AEAD + SHA-256 keys | Encrypt build cache on disk | Roundtrip, tamper detection, key derivation |
+| 11 | **Linker patches** | Strip `-w -s`, build ID removal, VCS suppression | Remove debug info and metadata from final binary | Testscript integration |
+| 12 | **Compile-time const rewrite** | Const → var demotion | Allow string constants to flow through literal obfuscators | Transformer directive tests |
+
 ### Speed
 
 `garble build` should take about twice as long as `go build`, as it needs to

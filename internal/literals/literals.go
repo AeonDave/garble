@@ -361,6 +361,6 @@ func getNextObfuscator(obfRand *obfRand, size int) obfuscator {
 	if size <= maxSize {
 		return obfRand.nextObfuscator()
 	} else {
-		return obfRand.nextLinearTimeObfuscator()
+		return obfRand.nextLinearTimeObfuscatorForSize(size)
 	}
 }

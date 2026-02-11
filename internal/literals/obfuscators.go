@@ -291,18 +291,26 @@ type obfRand struct {
 	keyProvider        KeyProvider
 }
 
+// asconProbabilityPct is the probability (0-100) that ASCON-128 is selected
+// for a given literal. At 60%, most literals get authenticated encryption;
+// the remaining 40% use lightweight obfuscators (simple, swap, split, etc.).
+const asconProbabilityPct = 60
+
+// asconMaxLinearSize is the maximum literal size (bytes) for which ASCON is
+// selected in the linear-time path. Larger literals fall back to simple
+// to avoid O(n) AST node generation that can slow compilation.
+const asconMaxLinearSize = 4096
+
 func (r *obfRand) nextObfuscator() obfuscator {
 	if r.testObfuscator != nil {
 		return r.testObfuscator
 	}
 
-	// ASCON is excluded from random selection: its inline ciphertext embedding
-	// (interleaved byte slices for key, nonce, and ciphertext) generates
-	// O(n) AST nodes per literal, causing compilation time to explode when
-	// applied at high probability across many packages (e.g. "build std").
-	// The lightweight obfuscators provide equivalent protection with minimal
-	// compile-time overhead. ASCON remains available for explicit/targeted use
-	// and can be re-enabled here at low probability if AST generation is optimized.
+	// Select ASCON-128 at asconProbabilityPct% probability.
+	if r.Intn(100) < asconProbabilityPct {
+		return newAsconObfuscator(r.asconHelper, r.keyProvider)
+	}
+
 	if obf := pickGeneralStrategy(r.Rand); obf != nil {
 		return obf
 	}
@@ -311,15 +319,21 @@ func (r *obfRand) nextObfuscator() obfuscator {
 }
 
 func (r *obfRand) nextLinearTimeObfuscator() obfuscator {
+	return r.nextLinearTimeObfuscatorForSize(0)
+}
+
+func (r *obfRand) nextLinearTimeObfuscatorForSize(dataLen int) obfuscator {
 	if r.testObfuscator != nil {
 		return r.testObfuscator
 	}
 
-	// ASCON is excluded for large literals: its inline ciphertext embedding
-	// generates AST nodes proportional to input size, making the Go compiler
-	// extremely slow on 128KB+ inputs. ASCON remains available for explicit use
-	// and can be re-enabled if AST generation is optimized (e.g. file-based
-	// ciphertext instead of inline byte slices).
+	// Select ASCON-128 for literals up to asconMaxLinearSize bytes.
+	// Beyond that threshold, the O(n) AST node generation for inline
+	// ciphertext becomes too expensive for the Go compiler.
+	if dataLen <= asconMaxLinearSize && r.Intn(100) < asconProbabilityPct {
+		return newAsconObfuscator(r.asconHelper, r.keyProvider)
+	}
+
 	if obf := pickLinearStrategy(r.Rand); obf != nil {
 		return obf
 	}
