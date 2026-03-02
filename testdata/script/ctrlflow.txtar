@@ -6,7 +6,7 @@ exec ./main
 cmp stderr main.stderr
 
 # simple check to ensure that control flow will work. Must be a minimum of 10 goto's
-grep 'goto _s2a_l10' $WORK/debug/test/main/GARBLE_controlflow.go
+grep 'goto _s2a_l10' $WORK/debug/test/main/_cf_merged.go
 
 # obfuscated function must be removed from original file
 ! grep 'main\(\)' $WORK/debug/test/main/garble_main.go
@@ -14,17 +14,17 @@ grep 'goto _s2a_l10' $WORK/debug/test/main/GARBLE_controlflow.go
 grep '\_\(\)' $WORK/debug/test/main/garble_main.go
 
 # obfuscated file must contains interface for unexported interface emulation
-grep 'GoString\(\) string' $WORK/debug/test/main/GARBLE_controlflow.go
-grep 'String\(\) string' $WORK/debug/test/main/GARBLE_controlflow.go
+grep 'GoString\(\) string' $WORK/debug/test/main/_cf_merged.go
+grep 'String\(\) string' $WORK/debug/test/main/_cf_merged.go
 
 # control flow obfuscation should work correctly with literals obfuscation
 ! binsubstr main$exe 'correct name'
 
 
 # check xor hardening
-grep '\(\w+ \^ \d+\)' $WORK/debug/test/main/GARBLE_controlflow.go
+grep '\(\w+ \^ \d+\)' $WORK/debug/test/main/_cf_merged.go
 # check delegate table hardening
-grep 'func\(int\) int' $WORK/debug/test/main/GARBLE_controlflow.go
+grep 'func\(int\) int' $WORK/debug/test/main/_cf_merged.go
 
 -- go.mod --
 module test/main

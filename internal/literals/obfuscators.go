@@ -59,27 +59,28 @@ type obfuscator interface {
 }
 
 var (
-	simpleObfuscator = simple{}
-
 	TestObfuscator         string
 	testPkgToObfuscatorMap map[string]obfuscator
 )
 
 const (
-	strategyNameSimple  = "simple"
 	strategyNameSwap    = "swap"
 	strategyNameSplit   = "split"
 	strategyNameShuffle = "shuffle"
 	strategyNameSeed    = "seed"
+	strategyNameCipher  = "cipher"
 )
 
 func init() {
-	// General purpose strategies.
-	registerStrategy(strategyNameSimple, simpleObfuscator, withLinearSupport())
+	// Lightweight strategies (weight 1 each).
 	registerStrategy(strategyNameSwap, swap{})
 	registerStrategy(strategyNameSplit, split{})
 	registerStrategy(strategyNameShuffle, shuffle{})
 	registerStrategy(strategyNameSeed, seed{})
+
+	// Primary strategy: custom cipher with per-build random S-box.
+	// Weight 6 gives ~60% selection probability (6 / (4×1 + 6) = 60%).
+	registerStrategy(strategyNameCipher, customCipherObfuscator{}, withWeight(6))
 }
 
 func genRandIntSlice(obfRand *mathrand.Rand, max, count int) []int {
@@ -152,7 +153,7 @@ var extKeyRanges = []struct {
 func randExtKey(rand *mathrand.Rand, idx int) *externalKey {
 	r := extKeyRanges[rand.Intn(len(extKeyRanges))]
 	return &externalKey{
-		name:  "garbleExternalKey" + strconv.Itoa(idx),
+		name:  "_ek" + strconv.Itoa(idx),
 		typ:   r.typ,
 		value: rand.Uint64() & r.max,
 		bits:  r.bits,
@@ -283,39 +284,19 @@ type obfRand struct {
 	*mathrand.Rand
 	testObfuscator obfuscator
 
-	disableAsconInterleave bool
-
-	proxyDispatcher    *proxyDispatcher
-	asconHelper        *asconInlineHelper
-	irreversibleHelper *irreversibleInlineHelper
-	keyProvider        KeyProvider
+	proxyDispatcher *proxyDispatcher
 }
-
-// asconProbabilityPct is the probability (0-100) that ASCON-128 is selected
-// for a given literal. At 60%, most literals get authenticated encryption;
-// the remaining 40% use lightweight obfuscators (simple, swap, split, etc.).
-const asconProbabilityPct = 60
-
-// asconMaxLinearSize is the maximum literal size (bytes) for which ASCON is
-// selected in the linear-time path. Larger literals fall back to simple
-// to avoid O(n) AST node generation that can slow compilation.
-const asconMaxLinearSize = 4096
 
 func (r *obfRand) nextObfuscator() obfuscator {
 	if r.testObfuscator != nil {
 		return r.testObfuscator
 	}
 
-	// Select ASCON-128 at asconProbabilityPct% probability.
-	if r.Intn(100) < asconProbabilityPct {
-		return newAsconObfuscator(r.asconHelper, r.keyProvider)
-	}
-
 	if obf := pickGeneralStrategy(r.Rand); obf != nil {
 		return obf
 	}
 
-	return simpleObfuscator
+	return swap{}
 }
 
 func (r *obfRand) nextLinearTimeObfuscator() obfuscator {
@@ -327,26 +308,14 @@ func (r *obfRand) nextLinearTimeObfuscatorForSize(dataLen int) obfuscator {
 		return r.testObfuscator
 	}
 
-	// Select ASCON-128 for literals up to asconMaxLinearSize bytes.
-	// Beyond that threshold, the O(n) AST node generation for inline
-	// ciphertext becomes too expensive for the Go compiler.
-	if dataLen <= asconMaxLinearSize && r.Intn(100) < asconProbabilityPct {
-		return newAsconObfuscator(r.asconHelper, r.keyProvider)
-	}
-
 	if obf := pickLinearStrategy(r.Rand); obf != nil {
 		return obf
 	}
 
-	return simpleObfuscator
+	return swap{}
 }
 
-func newObfRand(rand *mathrand.Rand, file *ast.File, nameFunc NameProviderFunc, keys KeyProvider, disableAsconInterleave bool) *obfRand {
-	if keys == nil {
-		panic("literals: nil key provider for obfuscator")
-	}
+func newObfRand(rand *mathrand.Rand, file *ast.File, nameFunc NameProviderFunc) *obfRand {
 	testObf := testPkgToObfuscatorMap[file.Name.Name]
-	asconHelper := newAsconInlineHelper(rand, nameFunc)
-	irreversibleHelper := newIrreversibleInlineHelper(rand, nameFunc)
-	return &obfRand{rand, testObf, disableAsconInterleave, newProxyDispatcher(rand, nameFunc), asconHelper, irreversibleHelper, keys}
+	return &obfRand{rand, testObf, newProxyDispatcher(rand, nameFunc)}
 }

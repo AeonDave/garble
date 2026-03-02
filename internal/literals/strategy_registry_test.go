@@ -16,18 +16,18 @@ func TestStrategyRegistryPickEmpty(t *testing.T) {
 
 func TestStrategyRegistryRegisterDuplicatePanics(t *testing.T) {
 	r := newStrategyRegistry()
-	r.register("one", simpleObfuscator)
+	r.register("one", swap{})
 	defer func() {
 		if r := recover(); r == nil {
 			t.Fatal("expected panic on duplicate register")
 		}
 	}()
-	r.register("one", simpleObfuscator)
+	r.register("one", swap{})
 }
 
 func TestStrategyRegistryNamesAndLookup(t *testing.T) {
 	r := newStrategyRegistry()
-	r.register("a", simpleObfuscator)
+	r.register("a", swap{})
 	r.register("b", swap{})
 	r.register("c", split{}, withLinearSupport())
 

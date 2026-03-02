@@ -261,7 +261,6 @@ func deriveCacheKey(seed []byte) [16]byte {
 
 **Domain Separation**: "garble-cache-encryption-v1" ensures cache keys differ from:
 - Literal obfuscation keys
-- Feistel round keys
 - Hash salts
 
 ---

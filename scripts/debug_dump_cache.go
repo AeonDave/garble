@@ -32,7 +32,7 @@ func main() {
 		panic(err)
 	}
 	fmt.Printf("Listed packages: %d\n", len(cache.ListedPackages))
-	for _, pkg := range []string{"bytes", "crypto/chacha20poly1305", "crypto/cipher", "crypto/hkdf", "crypto/sha256", "encoding/binary", "fmt", "io", "os", "sync"} {
+	for _, pkg := range []string{"bytes", "crypto/sha256", "encoding/binary", "fmt", "io", "os", "sync"} {
 		if lp := cache.ListedPackages[pkg]; lp != nil {
 			fmt.Printf("%s export=%q standard=%v\n", pkg, lp.Export, lp.Standard)
 		} else {

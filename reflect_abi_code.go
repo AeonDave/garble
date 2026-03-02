@@ -9,8 +9,8 @@ package main
 // Therefore all obfuscated names which occur within name need to be replaced with their original equivalents.
 // The code below does a more efficient version of:
 //
-//	func _originalNames(name string) string {
-//		for _, pair := range _originalNamePairs {
+//	func _rn(name string) string {
+//		for _, pair := range _np {
 //			name = strings.ReplaceAll(name, pair[0], pair[1])
 //		}
 //		return name
@@ -23,23 +23,23 @@ package main
 
 // Each pair is the obfuscated and then the real name.
 // The pairs are sorted by obfuscated name, lexicographically.
-var _originalNamePairs = []string{}
+var _np = []string{}
 
-var _originalNamesReplacer *_genericReplacer
+var _nr *_gr
 
-//disabledgo:linkname _originalNamesInit internal/abi._originalNamesInit
-func _originalNamesInit() {
-	_originalNamesReplacer = _makeGenericReplacer(_originalNamePairs)
+//disabledgo:linkname _ni internal/abi._ni
+func _ni() {
+	_nr = _mgr(_np)
 }
 
-//disabledgo:linkname _originalNames internal/abi._originalNames
-func _originalNames(name string) string {
-	return _originalNamesReplacer.Replace(name)
+//disabledgo:linkname _rn internal/abi._rn
+func _rn(name string) string {
+	return _nr.Replace(name)
 }
 
 // -- Lifted from internal/stringslite --
 
-func _hasPrefix(s, prefix string) bool {
+func _hp(s, prefix string) bool {
 	return len(s) >= len(prefix) && s[0:len(prefix)] == prefix
 }
 
@@ -52,7 +52,7 @@ func _hasPrefix(s, prefix string) bool {
 // Updating the code below should not be necessary in general,
 // unless upstream Go makes significant improvements to this replacer implementation.
 
-// _trieNode is a node in a lookup trie for prioritized key/value pairs. Keys
+// _tn is a node in a lookup trie for prioritized key/value pairs. Keys
 // and values may be empty. For example, the trie containing keys "ax", "ay",
 // "bcbc", "x" and "xy" could have eight nodes:
 //
@@ -69,7 +69,7 @@ func _hasPrefix(s, prefix string) bool {
 // n2 and n3; n4's child is n5; n6's child is n7. Nodes n0, n1 and n4 (marked
 // with a trailing "-") are partial keys, and nodes n2, n3, n5, n6 and n7
 // (marked with a trailing "+") are complete keys.
-type _trieNode struct {
+type _tn struct {
 	// value is the value of the trie node's key/value pair. It is empty if
 	// this node is not a complete key.
 	value string
@@ -92,19 +92,19 @@ type _trieNode struct {
 	// In the example above, node n4 has prefix "cbc" and n4's next node is n5.
 	// Node n5 has no children and so has zero prefix, next and table fields.
 	prefix string
-	next   *_trieNode
+	next   *_tn
 
 	// table is a lookup table indexed by the next byte in the key, after
-	// remapping that byte through _genericReplacer.mapping to create a dense
+	// remapping that byte through _gr.mapping to create a dense
 	// index. In the example above, the keys only use 'a', 'b', 'c', 'x' and
 	// 'y', which remap to 0, 1, 2, 3 and 4. All other bytes remap to 5, and
-	// _genericReplacer.tableSize will be 5. Node n0's table will be
-	// []*_trieNode{ 0:n1, 1:n4, 3:n6 }, where the 0, 1 and 3 are the remapped
+	// _gr.tableSize will be 5. Node n0's table will be
+	// []*_tn{ 0:n1, 1:n4, 3:n6 }, where the 0, 1 and 3 are the remapped
 	// 'a', 'b' and 'x'.
-	table []*_trieNode
+	table []*_tn
 }
 
-func (t *_trieNode) add(key, val string, priority int, r *_genericReplacer) {
+func (t *_tn) add(key, val string, priority int, r *_gr) {
 	if key == "" {
 		if t.priority == 0 {
 			t.value = val
@@ -123,17 +123,17 @@ func (t *_trieNode) add(key, val string, priority int, r *_genericReplacer) {
 		if n == len(t.prefix) {
 			t.next.add(key[n:], val, priority, r)
 		} else if n == 0 {
-			var prefixNode *_trieNode
+			var prefixNode *_tn
 			if len(t.prefix) == 1 {
 				prefixNode = t.next
 			} else {
-				prefixNode = &_trieNode{
+				prefixNode = &_tn{
 					prefix: t.prefix[1:],
 					next:   t.next,
 				}
 			}
-			keyNode := new(_trieNode)
-			t.table = make([]*_trieNode, r.tableSize)
+			keyNode := new(_tn)
+			t.table = make([]*_tn, r.tableSize)
 			t.table[r.mapping[t.prefix[0]]] = prefixNode
 			t.table[r.mapping[key[0]]] = keyNode
 			t.prefix = ""
@@ -141,7 +141,7 @@ func (t *_trieNode) add(key, val string, priority int, r *_genericReplacer) {
 			keyNode.add(key[1:], val, priority, r)
 		} else {
 			// Insert new node after the common section of the prefix.
-			next := &_trieNode{
+			next := &_tn{
 				prefix: t.prefix[n:],
 				next:   t.next,
 			}
@@ -153,17 +153,17 @@ func (t *_trieNode) add(key, val string, priority int, r *_genericReplacer) {
 		// Insert into existing table.
 		m := r.mapping[key[0]]
 		if t.table[m] == nil {
-			t.table[m] = new(_trieNode)
+			t.table[m] = new(_tn)
 		}
 		t.table[m].add(key[1:], val, priority, r)
 	} else {
 		t.prefix = key
-		t.next = new(_trieNode)
+		t.next = new(_tn)
 		t.next.add("", val, priority, r)
 	}
 }
 
-func (r *_genericReplacer) lookup(s string, ignoreRoot bool) (val string, keylen int, found bool) {
+func (r *_gr) lookup(s string, ignoreRoot bool) (val string, keylen int, found bool) {
 	// Iterate down the trie to the end, and grab the value and keylen with
 	// the highest priority.
 	bestPriority := 0
@@ -188,7 +188,7 @@ func (r *_genericReplacer) lookup(s string, ignoreRoot bool) (val string, keylen
 			node = node.table[index]
 			s = s[1:]
 			n++
-		} else if node.prefix != "" && _hasPrefix(s, node.prefix) {
+		} else if node.prefix != "" && _hp(s, node.prefix) {
 			n += len(node.prefix)
 			s = s[len(node.prefix):]
 			node = node.next
@@ -199,17 +199,17 @@ func (r *_genericReplacer) lookup(s string, ignoreRoot bool) (val string, keylen
 	return
 }
 
-type _genericReplacer struct {
-	root _trieNode
+type _gr struct {
+	root _tn
 	// tableSize is the size of a trie node's lookup table. It is the number
 	// of unique key bytes.
 	tableSize int
-	// mapping maps from key bytes to a dense index for _trieNode.table.
+	// mapping maps from key bytes to a dense index for _tn.table.
 	mapping [256]byte
 }
 
-func _makeGenericReplacer(oldnew []string) *_genericReplacer {
-	r := new(_genericReplacer)
+func _mgr(oldnew []string) *_gr {
+	r := new(_gr)
 	// Find each byte used, then assign them each an index.
 	for i := 0; i < len(oldnew); i += 2 {
 		key := oldnew[i]
@@ -232,7 +232,7 @@ func _makeGenericReplacer(oldnew []string) *_genericReplacer {
 		}
 	}
 	// Find each byte used, then assign them each an index.
-	r.root.table = make([]*_trieNode, r.tableSize)
+	r.root.table = make([]*_tn, r.tableSize)
 
 	for i := 0; i < len(oldnew); i += 2 {
 		r.root.add(oldnew[i], oldnew[i+1], len(oldnew)-i, r)
@@ -240,7 +240,7 @@ func _makeGenericReplacer(oldnew []string) *_genericReplacer {
 	return r
 }
 
-func (r *_genericReplacer) Replace(s string) string {
+func (r *_gr) Replace(s string) string {
 	dst := make([]byte, 0, len(s))
 	var last int
 	var prevMatchEmpty bool

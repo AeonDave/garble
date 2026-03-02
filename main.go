@@ -105,7 +105,7 @@ var booleanFlags = map[string]bool{
 }
 
 var flagSet = flag.NewFlagSet("garble", flag.ExitOnError)
-var rxGarbleFlag = regexp.MustCompile(`-(?:literals|tiny|debug|debugdir|seed|controlflow)(?:$|=)`)
+var rxGarbleFlag = regexp.MustCompile(`-(?:literals|tiny|debug|debugdir|seed|controlflow|force-rename)(?:$|=)`)
 
 var (
 	flagLiterals         bool
@@ -117,6 +117,7 @@ var (
 	buildNonceRandom     bool
 	flagControlFlowMode  = ctrlflow.ModeOff
 	controlFlowFlagValue = controlFlowFlag{mode: ctrlflow.ModeOff}
+	flagForceRename      bool
 
 	// Presumably OK to share fset across packages.
 	fset = token.NewFileSet()
@@ -134,6 +135,7 @@ func init() {
 	flagSet.StringVar(&flagDebugDir, "debugdir", "", "Write the obfuscated source to a directory, e.g. -debugdir=out")
 	flagSet.Var(&flagSeed, "seed", "Provide a base64-encoded seed, e.g. -seed=o9WDTZ4CN4w\nRandom seed is the default; use -seed=random to print it")
 	flagSet.Var(&controlFlowFlagValue, "controlflow", "Control-flow obfuscation scope: off, directives, auto, all")
+	flagSet.BoolVar(&flagForceRename, "force-rename", false, "Rename exported methods even if they might implement interfaces")
 
 	var noCacheEncrypt bool
 	flagSet.BoolVar(&noCacheEncrypt, "no-cache-encrypt", false, "Disable cache encryption (not recommended for production)")
@@ -364,10 +366,6 @@ func mainErr(args []string) error {
 			defer unlock()
 
 			executablePath = modifiedLinkPath
-
-			// Phase 2: Feistel encryption (runtime will use this instead of XOR)
-			seed := feistelSeed()
-			_ = os.Setenv(linker.FeistelSeedEnv, base64.StdEncoding.EncodeToString(seed))
 
 			if flagTiny {
 				_ = os.Setenv(linker.TinyEnv, "true")

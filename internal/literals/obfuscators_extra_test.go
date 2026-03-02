@@ -46,7 +46,8 @@ func TestRandExtKeysRange(t *testing.T) {
 
 func TestShuffleSplitSwapSeedObfuscators(t *testing.T) {
 	rand := mathrand.New(mathrand.NewSource(2))
-	ctx := newSimpleContext(rand)
+	nameFunc := func(r *mathrand.Rand, base string) string { return base }
+	ctx := &obfRand{Rand: rand, proxyDispatcher: newProxyDispatcher(rand, nameFunc)}
 	data := []byte("hello")
 
 	cases := []obfuscator{shuffle{}, split{}, swap{}, seed{}}

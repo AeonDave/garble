@@ -42,8 +42,7 @@ func renderObfuscatedSource(t *testing.T, filename, src string, forced obfuscato
 	}
 
 	rand := mathrand.New(mathrand.NewSource(42))
-	keyProvider := NewHKDFKeyProvider([]byte("short-master-secret-0123456789"), []byte("short-package-salt-0123456789"), filename)
-	cfg := BuilderConfig{KeyProvider: keyProvider}
+	cfg := BuilderConfig{}
 	obfuscated := Obfuscate(rand, file, &info, nil, func(rand *mathrand.Rand, baseName string) string {
 		return baseName
 	}, cfg)
@@ -63,7 +62,7 @@ func TestShortStringObfuscation(t *testing.T) {
 func short() string { return "hi" }
 `
 
-	code := renderObfuscatedSource(t, "short.go", src, simple{})
+	code := renderObfuscatedSource(t, "short.go", src, swap{})
 
 	if strings.Contains(code, `"hi"`) {
 		t.Fatalf("short literal survived obfuscation: %s", code)
@@ -79,17 +78,9 @@ func TestLongStringChainDependency(t *testing.T) {
 func duo() string { return "ok" }
 `
 
-	code := renderObfuscatedSource(t, "long.go", src, simple{})
+	code := renderObfuscatedSource(t, "long.go", src, swap{})
 
 	if strings.Contains(code, `"ok"`) {
 		t.Fatalf("long literal survived obfuscation: %s", code)
-	}
-	if !strings.Contains(code, "prevTemp") {
-		if !strings.Contains(code, "_garbleIrreversibleDecode") {
-			t.Fatalf("long literal should include irreversible decoder: %s", code)
-		}
-		if !strings.Contains(code, "subkeys := []uint64") {
-			t.Fatalf("long literal should embed irreversible subkeys: %s", code)
-		}
 	}
 }

@@ -606,7 +606,7 @@ func (t *trashGenerator) generateCall(vars map[string]*definedVar) ast.Stmt {
 			attempts++
 			// Prevent infinite loop - if we can't generate a valid name after many attempts, use a fallback
 			if attempts > 100 {
-				ident = ast.NewIdent(fmt.Sprintf("_garble_fallback_%d", i))
+				ident = ast.NewIdent(fmt.Sprintf("_zx_fb_%d", i))
 				break
 			}
 		}
@@ -623,9 +623,9 @@ func (t *trashGenerator) generateCall(vars map[string]*definedVar) ast.Stmt {
 // generateAssign generates assignments to random variables with trash values or another variables
 // Example:
 //
-// _garblekoc67okop1c1, _garble8qnl5l2r2qgf3, _garblebd5tafd3q10kg = (int)(_garble5l9i0jv62nmks), (int)(76), (int)(75)
-// _garbleffa48bbrevdfd = os.Stdout
-// _garblecneca0kqjdklo, _garble8n2j5a0p1ples = (int32)(44), (uint32)(33)
+// _zxkoc67okop1c1, _zx8qnl5l2r2qgf3, _zxbd5tafd3q10kg = (int)(_zx5l9i0jv62nmks), (int)(76), (int)(75)
+// _zxffa48bbrevdfd = os.Stdout
+// _zxcneca0kqjdklo, _zx8n2j5a0p1ples = (int32)(44), (uint32)(33)
 func (t *trashGenerator) generateAssign(vars map[string]*definedVar) ast.Stmt {
 	var varNames []string
 	for name, d := range vars {
@@ -661,14 +661,14 @@ func (t *trashGenerator) generateAssign(vars map[string]*definedVar) ast.Stmt {
 // Generate generates complicated trash code containing calls to functions and methods and assignment of local variables
 // Example:
 //
-// _garble5q5ot93l1arna, _garble7al9sqg518rmm := os.Create("I3BLXYDYB2TMSHB7F55K5IMHJBNAFOKKJRKZHRBR")
+// _zx5q5ot93l1arna, _zx7al9sqg518rmm := os.Create("I3BLXYDYB2TMSHB7F55K5IMHJBNAFOKKJRKZHRBR")
 //
-//	_ = _garble5q5ot93l1arna.Close()
+//	_ = _zx5q5ot93l1arna.Close()
 //	v10, v9, v7 = (uint32)(v4), (uint16)(v5), (uint)(v3)
-//	v1, v13, _garble5q5ot93l1arna, v14 = v1, (float32)(v8), nil, (float64)(562704055)
+//	v1, v13, _zx5q5ot93l1arna, v14 = v1, (float32)(v8), nil, (float64)(562704055)
 //	_ = os.Remove("QQEEH917VEIHK===")
-//	_garblecoq8aub6r0q3r, _garble77tl4pskm8ep3 := _garble5q5ot93l1arna.ReadAt(([]byte)("0HHBJP9CFSRDH1HF"), (int64)(v2))
-//	_garble66djp5lkdng61 := ___garble_import1.LoadUint32(nil)
+//	_zxcoq8aub6r0q3r, _zx77tl4pskm8ep3 := _zx5q5ot93l1arna.ReadAt(([]byte)("0HHBJP9CFSRDH1HF"), (int64)(v2))
+//	_zx66djp5lkdng61 := ___zi1.LoadUint32(nil)
 func (t *trashGenerator) Generate(statementCount int, externalVars map[string]types.Type) []ast.Stmt {
 	vars := make(map[string]*definedVar)
 	for name, typ := range externalVars {

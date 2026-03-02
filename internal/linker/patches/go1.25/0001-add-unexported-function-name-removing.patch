@@ -1,7 +1,7 @@
 From 78ee3e20686c13182c5baf272d9433bb553d19bd Mon Sep 17 00:00:00 2001
 From: Dave <nova.davide@gmail.com>
 Date: Sun, 26 Oct 2025 23:19:40 +0100
-Subject: [PATCH] Add support for GARBLE_LINK_TINY to minimize funcnametab for
+Subject: [PATCH] Add support for _XLINK_TINY to minimize funcnametab for
  non-exported symbols
 
 ---
@@ -31,17 +31,17 @@ index 9532b33..8390e93 100644
  func (state *pclntab) generateFuncnametab(ctxt *Link, funcs []loader.Sym) map[loader.Sym]uint32 {
  	nameOffsets := make(map[loader.Sym]uint32, state.nfunc)
  
-+	garbleTiny := os.Getenv("GARBLE_LINK_TINY") == "true"
++	linkTiny := os.Getenv("_XLINK_TINY") == "true"
 +
  	// Write the null terminated strings.
  	writeFuncNameTab := func(ctxt *Link, s loader.Sym) {
  		symtab := ctxt.loader.MakeSymbolUpdater(s)
-+		if garbleTiny {
++		if linkTiny {
 +			symtab.AddStringAt(0, "")
 +		}
 +
  		for s, off := range nameOffsets {
-+			if garbleTiny && off == 0 {
++			if linkTiny && off == 0 {
 +				continue
 +			}
  			symtab.AddCStringAt(int64(off), ctxt.loader.SymName(s))
@@ -51,7 +51,7 @@ index 9532b33..8390e93 100644
  	// Loop through the CUs, and calculate the size needed.
  	var size int64
 +
-+	if garbleTiny {
++	if linkTiny {
 +		size = 1 // first byte is reserved for empty string used for all non-exportable method names
 +	}
 +	// Kinds of SymNames found in the wild:
@@ -74,7 +74,7 @@ index 9532b33..8390e93 100644
  	walkFuncs(ctxt, funcs, func(s loader.Sym) {
 +		name := ctxt.loader.SymName(s)
 +
-+		if garbleTiny && !isExported(name) {
++		if linkTiny && !isExported(name) {
 +			nameOffsets[s] = 0 // redirect name to empty string
 +			return
 +		}

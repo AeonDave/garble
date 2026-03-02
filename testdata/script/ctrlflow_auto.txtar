@@ -1,17 +1,17 @@
 env GARBLE_CONTROLFLOW=
 exec garble -debugdir=debug_off -seed=0002deadbeef build -o=main$exe
-! exists $WORK/debug_off/test/main/GARBLE_controlflow.go
+! exists $WORK/debug_off/test/main/_cf_merged.go
 rm main$exe
 
 exec garble -debugdir=debug_auto -seed=0002deadbeef -controlflow=auto build -o=main$exe
 
 # auto mode should pick up main without directive
-grep 'func main()' $WORK/debug_auto/test/main/GARBLE_controlflow.go
+grep 'func main()' $WORK/debug_auto/test/main/_cf_merged.go
 # ensure the auto-obfuscated body contains at least one dispatcher label
-grep 'goto _s2a_' $WORK/debug_auto/test/main/GARBLE_controlflow.go
+grep 'goto _s2a_' $WORK/debug_auto/test/main/_cf_merged.go
 
 # functions with //garble:nocontrolflow stay out of the obfuscated file
-! grep 'SkipMe' $WORK/debug_auto/test/main/GARBLE_controlflow.go
+! grep 'SkipMe' $WORK/debug_auto/test/main/_cf_merged.go
 
 exec ./main
 stdout 'start'
@@ -21,7 +21,7 @@ rm main$exe
 
 env GARBLE_CONTROLFLOW=auto
 exec garble -debugdir=debug_env -seed=0002deadbeef build -o=main$exe
-grep 'goto _s2a_' $WORK/debug_env/test/main/GARBLE_controlflow.go
+grep 'goto _s2a_' $WORK/debug_env/test/main/_cf_merged.go
 rm main$exe
 
 -- go.mod --

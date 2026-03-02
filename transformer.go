@@ -385,12 +385,10 @@ func (tf *transformer) rewriteAsmSource(path string, buf, includeBuf *bytes.Buff
 					}
 					tf.replaceAsmNames(includeBuf, content)
 
-					// For now, we replace `foo.h` or `dir/foo.h` with `garbled_foo.h`.
-					// The different name ensures we don't use the unobfuscated file.
-					// This is far from perfect, but does the job for the time being.
-					// In the future, use a randomized name.
+					// Replace the header with an obfuscated name to avoid using
+					// the unobfuscated include file.
 					basename := filepath.Base(includePath)
-					newPath = "garbled_" + basename
+					newPath = "_h_" + basename
 
 					if _, err := tf.writeSourceFile(basename, newPath, includeBuf.Bytes()); err != nil {
 						return err
@@ -563,7 +561,7 @@ func (tf *transformer) applyControlFlowTransforms(files *[]*ast.File, paths *[]s
 					pkgDir := filepath.Join(flagDebugDir, filepath.FromSlash(tf.curPkg.ImportPath))
 					if err := os.MkdirAll(pkgDir, 0o755); err != nil {
 						log.Printf("garble: failed to create debugdir for %s: %v", tf.curPkg.ImportPath, err)
-					} else if err := os.WriteFile(filepath.Join(pkgDir, "GARBLE_controlflow_failed.go"), src, 0o666); err != nil {
+					} else if err := os.WriteFile(filepath.Join(pkgDir, "_cf_failed.go"), src, 0o666); err != nil {
 						log.Printf("garble: failed to write control-flow debug file for %s: %v", tf.curPkg.ImportPath, err)
 					}
 				}
@@ -643,12 +641,6 @@ func (tf *transformer) obfuscateAndEmit(files []*ast.File, paths []string) ([]st
 			if flagTiny {
 				stripRuntime(basename, file)
 				tf.useAllImports(file)
-			}
-			if basename == "symtab.go" {
-				seed := feistelSeed()
-				var seedArray [32]byte
-				copy(seedArray[:], seed)
-				updateEntryOffsetFeistel(file, seedArray)
 			}
 		}
 		if err := tf.transformDirectives(file.Comments); err != nil {
@@ -1150,15 +1142,13 @@ func (tf *transformer) transformGoFile(file *ast.File, filePath string) *ast.Fil
 	// and that's not allowed in the runtime itself.
 	var litBuilder *literals.Builder
 	if flagLiterals && tf.curPkg.ToObfuscate && !tf.skipLiterals {
-		keyProvider := tf.newLiteralKeyProvider(filePath)
-		litBuilder = literals.NewBuilder(tf.obfRand, file, randomName, literals.BuilderConfig{KeyProvider: keyProvider, DisableAsconInterleave: flagTiny})
+		litBuilder = literals.NewBuilder(tf.obfRand, file, randomName, literals.BuilderConfig{})
 		file = litBuilder.ObfuscateFile(file, tf.info, tf.linkerVariableStrings)
 
 		// some imported constants might not be needed anymore, remove unnecessary imports
 		tf.useAllImports(file)
 	} else if len(tf.linkerVariableStrings) > 0 {
-		keyProvider := tf.newLiteralKeyProvider(filePath)
-		litBuilder = literals.NewBuilder(tf.obfRand, file, randomName, literals.BuilderConfig{KeyProvider: keyProvider, DisableAsconInterleave: flagTiny})
+		litBuilder = literals.NewBuilder(tf.obfRand, file, randomName, literals.BuilderConfig{})
 	}
 
 	if litBuilder != nil {
@@ -1328,7 +1318,7 @@ func (tf *transformer) transformGoFile(file *ast.File, filePath string) *ast.Fil
 			} else {
 				debugName = "method"
 			}
-			if obj.Exported() && sign.Recv() != nil {
+			if !flagForceRename && obj.Exported() && sign.Recv() != nil {
 				return true // might implement an interface
 			}
 			switch name {
@@ -1378,16 +1368,6 @@ func (tf *transformer) transformGoFile(file *ast.File, filePath string) *ast.Fil
 	}
 
 	return astutil.Apply(file, pre, post).(*ast.File)
-}
-
-func (tf *transformer) newLiteralKeyProvider(filePath string) literals.KeyProvider {
-	master := seedHashInput()
-	if len(master) == 0 {
-		master = tf.curPkg.GarbleActionID[:]
-	}
-	pkgSalt := tf.curPkg.GarbleActionID[:]
-	fileID := tf.literalFileIdentifier(filePath)
-	return literals.NewHKDFKeyProvider(master, pkgSalt, fileID)
 }
 
 func (tf *transformer) literalFileIdentifier(path string) string {
@@ -1525,7 +1505,7 @@ func (tf *transformer) transformLink(args []string) ([]string, error) {
 
 	// Starting in Go 1.17, Go's version is implicitly injected by the linker.
 	// It's the same method as -X, so we can override it with an extra flag.
-	flags = append(flags, "-X=runtime.buildVersion=unknown")
+	flags = append(flags, "-X=runtime.buildVersion=go1.25.0")
 
 	// Ensure we strip the -buildid flag, to not leak any build IDs for the
 	// link operation or the main package's compilation.

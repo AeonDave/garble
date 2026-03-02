@@ -27,22 +27,14 @@ const (
 // NameProviderFunc defines a function type that generates a string based on a random source and a base name.
 type NameProviderFunc func(rand *mathrand.Rand, baseName string) string
 
-type BuilderConfig struct {
-	KeyProvider KeyProvider
-	// DisableAsconInterleave skips extra interleaving of ASCON key/nonce/ciphertext
-	// to keep literal obfuscation leaner (useful for -tiny builds).
-	DisableAsconInterleave bool
-}
+type BuilderConfig struct{}
 
 type Builder struct {
 	obfRand *obfRand
 }
 
 func NewBuilder(rand *mathrand.Rand, file *ast.File, nameFunc NameProviderFunc, cfg BuilderConfig) *Builder {
-	if cfg.KeyProvider == nil {
-		panic("literals: Builder requires a key provider")
-	}
-	return &Builder{obfRand: newObfRand(rand, file, nameFunc, cfg.KeyProvider, cfg.DisableAsconInterleave)}
+	return &Builder{obfRand: newObfRand(rand, file, nameFunc)}
 }
 
 func (b *Builder) ObfuscateFile(file *ast.File, info *types.Info, linkStrings map[*types.Var]string) *ast.File {
@@ -122,12 +114,6 @@ func (b *Builder) ObfuscateStringLiteral(value string, pos token.Pos) ast.Expr {
 
 func (b *Builder) Finalize(file *ast.File) {
 	b.obfRand.proxyDispatcher.AddToFile(file)
-	if b.obfRand.asconHelper.used {
-		insertAsconInlineCode(file, b.obfRand.asconHelper)
-	}
-	if b.obfRand.irreversibleHelper.used {
-		insertIrreversibleInlineCode(file, b.obfRand.irreversibleHelper)
-	}
 }
 
 // Obfuscate replaces literals with obfuscated anonymous functions.

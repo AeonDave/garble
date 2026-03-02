@@ -23,18 +23,18 @@ func abiNamePatch(path string) (string, error) {
 	}
 
 	find := `return unsafe.String(n.DataChecked(1+i, "non-empty string"), l)`
-	replace := `return _originalNames(unsafe.String(n.DataChecked(1+i, "non-empty string"), l))`
+	replace := `return _rn(unsafe.String(n.DataChecked(1+i, "non-empty string"), l))`
 
 	str := strings.Replace(string(data), find, replace, 1)
 
 	originalNames := `
-//go:linkname _originalNames
-func _originalNames(name string) string
+//go:linkname _rn
+func _rn(name string) string
 
-//go:linkname _originalNamesInit
-func _originalNamesInit()
+//go:linkname _ni
+func _ni()
 
-func init() { _originalNamesInit() }
+func init() { _ni() }
 `
 
 	return str + originalNames, nil

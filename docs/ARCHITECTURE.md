@@ -20,9 +20,8 @@
 
 Garble is a Go code obfuscator that sits between the standard Go toolchain and the build process. It transforms source code to:
 - Remove identifying information (names, paths, metadata)
-- Protect literals (strings, constants)
+- Protect literals (strings, constants) using per-build random ciphers
 - Obfuscate control flow
-- Encrypt runtime metadata
 - Make reverse engineering significantly harder
 
 This repository is a hardened fork (AeonDave/garble) of burrowers/garble with additional security-focused features.
@@ -31,14 +30,15 @@ This repository is a hardened fork (AeonDave/garble) of burrowers/garble with ad
 
 This fork (AeonDave/garble) introduces several improvements compared to `burrowers/garble`:
 
-| Feature            | Upstream | Hardened Fork                         |
-|--------------------|----------|---------------------------------------|
-| Cache encryption   | ❌       | ✅ ASCON-128                          |
-| Feistel cipher     | ❌       | ✅ 4-round metadata protection        |
-| Build nonce        | Partial  | ✅ Complete + reproducibility         |
-| Directive parsing  | Basic    | ✅ Fuzzing + robust checks            |
-| Test coverage      | ~70%     | ~85%                                  |
-| Security docs      | Minimal  | ✅ Comprehensive SECURITY.md          |
+| Feature               | Upstream | Hardened Fork                              |
+|-----------------------|----------|--------------------------------------------|
+| Cache encryption      | ❌       | ✅ ASCON-128                               |
+| Stealth literals      | ❌       | ✅ Per-build random SPN cipher             |
+| Build nonce           | Partial  | ✅ Complete + reproducibility              |
+| Directive parsing     | Basic    | ✅ Fuzzing + robust checks                 |
+| `-force-rename` flag  | ❌       | ✅ Renames exported methods                |
+| Test coverage         | ~70%     | ~85%                                       |
+| Security docs         | Minimal  | ✅ Comprehensive SECURITY.md               |
 
 ### 1.3 Requirements
 
@@ -103,26 +103,19 @@ This fork (AeonDave/garble) introduces several improvements compared to `burrowe
 │  │  ┌────────────────┐  ┌─────────────────┐            │   │
 │  │  │ Name Hashing   │  │ Literal Obfusc. │            │   │
 │  │  │  (hash.go)     │  │  (literals/)    │            │   │
-│  │  │                │  │  • ASCON-128    │            │   │
-│  │  │ SHA-256 +      │  │  • Simple       │            │   │
-│  │  │ per-package    │  │  • Split/Swap   │            │   │
+│  │  │                │  │  • Custom Cipher│            │   │
+│  │  │ SHA-256 +      │  │  • Swap/Split  │            │   │
+│  │  │ per-package    │  │  • Shuffle/Seed│            │   │
 │  │  │ seed mixing    │  └─────────────────┘            │   │
 │  │  └────────────────┘                                 │   │
 │  │  ┌────────────────┐  ┌─────────────────┐            │   │
-│  │  │ Control Flow   │  │ Feistel Cipher  │            │   │
-│  │  │  (ctrlflow/)   │  │  (feistel.go)   │            │   │
+│  │  │ Control Flow   │  │ Runtime Patch   │            │   │
+│  │  │  (ctrlflow/)   │  │ (runtime_patch) │            │   │
 │  │  │  • Flattening  │  │                 │            │   │
-│  │  │  • Block split │  │  4-round per    │            │   │
-│  │  │  • Junk jumps  │  │  func metadata  │            │   │
-│  │  │  • Trash       │  │  encrypt/decrypt│            │   │
+│  │  │  • Block split │  │ Strip runtime   │            │   │
+│  │  │  • Junk jumps  │  │ print/trace     │            │   │
+│  │  │  • Trash       │  │ (-tiny mode)    │            │   │
 │  │  └────────────────┘  └─────────────────┘            │   │
-│  │  ┌────────────────┐                                   │   │
-│  │  │ Runtime Patch  │                                   │   │
-│  │  │ (runtime_patch)│                                   │   │
-│  │  │                │                                   │   │
-│  │  │ Inject helpers │                                   │   │
-│  │  │ for Feistel    │                                   │   │
-│  │  └────────────────┘                                   │   │
 │  └─────────────────────────────────────────────────────┘   │
 │                     │                                      │
 │                     ▼                                      │
@@ -148,15 +141,15 @@ This fork (AeonDave/garble) introduces several improvements compared to `burrowe
 │  ┌───────────────────────────────────────────────────────────┐  │
 │  │  Cryptographic Primitive Layer                            │  │
 │  │  • Seed & nonce management (hash.go)                      │  │
-│  │  • Feistel cipher (feistel.go)                            │  │
-│  │  • ASCON-128 encryption (cache_ascon.go, literals/)       │  │
+│  │  • ASCON-128 for cache encryption (internal/cache/)       │  │
+│  │  • Per-build random cipher (internal/literals/)           │  │
 │  └───────────────────────────────────────────────────────────┘  │
 │                         │                                       │
 │  ┌───────────────────────────────────────────────────────────┐  │
 │  │  Caching & State Management Layer                         │  │
 │  │  • Shared cache (cache_shared.go)                         │  │
 │  │  • Package cache (cache_pkg.go)                           │  │
-│  │  • Encrypted persistence (cache_ascon.go)                 │  │
+│  │  • Encrypted persistence (internal/cache/encryption.go)   │  │
 │  └───────────────────────────────────────────────────────────┘  │
 │                         │                                       │
 │  ┌───────────────────────────────────────────────────────────┐  │
@@ -204,6 +197,7 @@ Main flags:
 -literals               // Enable literal obfuscation
 -tiny                   // Remove extra info (panic messages, etc.)
 -controlflow            // Enable control flow obfuscation
+-force-rename           // Rename exported methods (may break interfaces)
 -debugdir               // Directory for debug output
 -no-cache-encrypt       // Disable cache encryption (default: ON)
 ```
@@ -319,11 +313,12 @@ Cache architecture:
 └──────────────────────────────────────────────────┘
 ```
 
-cache_ascon.go — ASCON-128 encryption:
+internal/cache/encryption.go — ASCON-128 encryption:
 - Algorithm: ASCON-128 (a NIST lightweight cipher standard winner)
 - Key derivation: SHA-256(seed || "garble-cache-encryption-v1")
 - Format: [16-byte nonce][ciphertext][16-byte auth tag]
 - Provides confidentiality and authentication
+- Used only for build cache (never appears in output binaries)
 
 ### 3.5 Obfuscation modules (internal/)
 
@@ -344,26 +339,30 @@ Pre-pass performed in transformer.go:
 
 Obfuscator types:
 
-1. ASCON obfuscator (cryptographically strong)
-   - Encrypts literals with ASCON-128
-   - Injects inline decryption code
+1. **Custom cipher** (primary, ~60% weight)
+   - Per-build random 256-byte S-box via Fisher-Yates shuffle
+   - Multi-round SPN with CBC-like diffusion (4-6 rounds)
+   - No fixed cryptographic constants — stealth by design
+   - Inline decryption code generated as AST
 
-2. Simple obfuscator (lighter, irreversible)
-   - S-box + Feistel + external key mixing
-   - No de-obfuscation metadata emitted
+2. **Split** obfuscator
+   - Splits a string into chunks and reconstructs at runtime
 
-3. Split obfuscator
-   - Splits a string into chunks and reconstructs it at runtime
-
-4. Swap obfuscator
+3. **Swap** obfuscator
    - Swaps character positions
 
-Obfuscator selection:
+4. **Shuffle** obfuscator
+   - Applies a random permutation to byte positions
+
+5. **Seed** obfuscator
+   - Uses a seed-based PRNG to generate XOR masks
+
+Obfuscator selection (weighted):
 
 ```
 Literal size < 2KB?
-    ├─ Yes → ASCON, Simple, Split, Swap (random choice)
-    └─ No  → ASCON or linear-time obfuscators (random choice)
+    ├─ Yes → Custom cipher, Split, Swap, Shuffle, Seed (weighted random)
+    └─ No  → Linear-time obfuscators only (Split, Swap, Shuffle, Seed)
 ```
 
 Constant pre-processing (in transformer.go):
@@ -383,7 +382,7 @@ func init() {
 }
 ```
 
-- The injected value is obfuscated (ASCON-128 or Simple) like any other literal
+- The injected value is obfuscated like any other literal
 - Result: API keys, secrets, and linker-injected strings are protected in the final binary
 
 #### 3.5.2 ctrlflow/ — Control flow obfuscation
@@ -392,35 +391,43 @@ Available modes:
 
 ```go
 const (
-    ModeOff        Mode = iota  // Disabled
-    ModeXor                      // XOR-based dispatcher
-    ModeComplex                  // SSA + flattening + junk
+    ModeOff        Mode = iota  // Disabled (default)
+    ModeDirectives              // Only //garble:controlflow functions
+    ModeAuto                    // All eligible except //garble:nocontrolflow
+    ModeAll                     // Every function
 )
 ```
 
 Techniques:
 
-1. Flattening: converts if/switch constructs into a centralized dispatcher
+1. Flattening: converts if/switch constructs into a centralised dispatcher
 2. Block splitting: splits basic blocks into sub-blocks with intermediate jumps
 3. Junk jumps: inserts non-functional jumps to confuse the CFG
 4. Trash blocks: injects dead code to increase complexity
+5. Hardening prologues: dispatcher keys are obfuscated with opaque predicates
 
 Directives:
 
 ```go
-//garble:controlflow flatten=max splits=10 junk=5
+//garble:controlflow
 func myFunc() { ... }
 
 //garble:nocontrolflow
 func skipThis() { ... }
 ```
 
-#### 3.5.3 linker/ — Runtime patching
+#### 3.5.3 linker/ — Linker patching
 
-Runtime patches for Go:
-- Inject helper functions for Feistel decryption
-- Patch runtime.funcname() to decrypt names on the fly
-- Keep reflection name mapping empty to avoid leaking identifiers
+Applied at link time:
+- Patch the Go linker to strip additional metadata
+- Communicate `-tiny` mode via `_XLINK_TINY` environment variable
+- Apply linker patches from `internal/linker/patches/`
+
+#### 3.5.4 runtime_patch.go — Runtime patching
+
+Applied when building the `runtime` package:
+- `stripRuntime()`: Removes runtime print and traceback function bodies (when `-tiny`)
+- `nopPrintDecl()`: Replaces function bodies with empty returns
 
 ---
 
@@ -454,7 +461,7 @@ Runtime patches for Go:
 ├──────────────────────────────────────────────────────────────┤
 │  For each package in dependency order:                       │
 │                                                              │
-│  9. Toolexec intercepts "compile" command                  │
+│  9.  Toolexec intercepts "compile" command                   │
 │  10. Load package metadata from cache                        │
 │  11. Parse .go files → AST                                   │
 │  12. Type-check → types.Package, types.Info                  │
@@ -473,8 +480,8 @@ Runtime patches for Go:
 ┌──────────────────────────────────────────────────────────────┐
 │  PHASE 4: Linking                                            │
 ├──────────────────────────────────────────────────────────────┤
-│  17. Toolexec intercepts "link" command                     │
-│  18. Apply linker patches (runtime helpers, etc.)            │
+│  17. Toolexec intercepts "link" command                      │
+│  18. Apply linker patches                                    │
 │  19. Strip debug info (-w -s)                                │
 │  20. Remove build/module info                                │
 │  21. Call original Go linker                                 │
@@ -489,7 +496,9 @@ Runtime patches for Go:
 └──────────────────────────────────────────────────────────────┘
 ```
 
-## 5. Obfuscation mechanisms
+---
+
+## 5. Obfuscation Mechanisms
 
 ### 5.1 Name obfuscation
 
@@ -514,9 +523,9 @@ Step 3: Encode to a valid Go identifier
 Namespace isolation:
 - Each package has a different salt
 - Identical names in different packages produce different hashes
-- Collision probability: negligible (64-bit space in this scheme)
+- Collision probability: negligible (64-bit space)
 
-### 5.2 Literal obfuscation (ASCON-128)
+### 5.2 Literal obfuscation (per-build random cipher)
 
 Flow for a string literal:
 
@@ -524,57 +533,41 @@ Flow for a string literal:
 Original Code:
     msg := "Hello, World!"
 
-Step 1: Derive per-literal key
-    literalKey = deriveLiteralKey(combinedSeed, literalIndex)
+Step 1: Select obfuscation strategy (weighted random)
+    // ~60%: Custom cipher, ~10% each: swap, split, shuffle, seed
 
-Step 2: Encrypt with ASCON-128
-    ciphertext = ASCON_Encrypt(literalKey, nonce, "Hello, World!")
+Step 2 (Custom cipher path):
+    // Generate per-build random S-box via Fisher-Yates
+    sbox := fisherYatesSbox(rand)
+    invSbox := invertSbox(sbox)
+    rounds := 4 + rand.Intn(3)
+    keyBytes := randomBytes(rounds)
 
-Step 3: Inject inline decryption
+    // Encrypt with SPN (substitution-permutation network)
+    ciphertext := customCipherEncrypt(sbox, keyBytes, plaintext)
+
+Step 3: Emit inline decryption code (AST)
     Obfuscated Code:
     func() string {
-        key := interleave(evenKey, oddKey)    // embedded, split
-        nonce := interleave(evenNonce, oddNonce)
-        ct := interleave(evenCt, oddCt)       // ciphertext
-        pt := asconDecrypt(key, nonce, ct)    // zeroizes key/nonce/ct internally
-        return string(pt)
+        data := []byte{...ciphertext...}
+        invSbox := [256]byte{...}   // per-build random
+        keyBytes := []byte{...}     // per-build random
+        for r := len(keyBytes)-1; r >= 0; r-- {
+            // Inverse substitution
+            // Inverse CBC diffusion
+            // XOR with round key
+        }
+        return string(data)
     }()
 ```
 
-Characteristics:
-- Each literal has a unique key and nonce
+Stealth characteristics:
+- No fixed cryptographic constants (AES S-boxes, ASCON IVs) in output
+- Each build produces a unique S-box permutation
 - Runtime decryption overhead: ~1–2 µs per literal
-- No plaintext leakage (AEAD provides authentication)
-- Key/nonce/ciphertext are interleaved at build time and zeroized after decrypt
+- Key material is zeroized after decryption
 
-### 5.3 Feistel cipher for metadata
-
-Applied to the runtime funcInfo table:
-
-```
-Go runtime maintains a table of functions like:
-    type funcInfo struct {
-        nameOff int32   // Offset in the namedata section
-        ...
-    }
-
-Obfuscation:
-    1. Derive 4 round keys from the seed
-    2. For each funcInfo entry:
-        encryptedNameOff = Feistel_Encrypt(nameOff, funcID, keys)
-    3. Patch runtime.funcname() to decrypt on the fly:
-        func funcname(f funcInfo) string {
-            realOff := Feistel_Decrypt(f.nameOff, f.funcID, keys)
-            return namedata[realOff:]
-        }
-```
-
-Properties:
-- Format-preserving: the encrypted value has the same size as the original
-- Deterministic runtime decryption with the same keys
-- Overhead: ~10 ns per decryption (4 rounds)
-
-### 5.4 Control flow obfuscation (Complex mode)
+### 5.3 Control flow obfuscation
 
 Example flattening:
 
@@ -632,18 +625,17 @@ case 4:  // Dead code, never reached
 
 ### 6.1 Security
 
-1. Standard crypto primitives:
-   - ASCON-128 (NIST Lightweight Crypto competition winner)
-   - SHA-256 for hashing and key derivation
-   - No home-grown crypto
+1. **Stealth-first literal encryption**:
+   - Per-build random SPN cipher — no detectable crypto signatures
+   - Fisher-Yates S-box generation defeats findcrypt and YARA rules
+   - Multiple obfuscation strategies for diversity
 
-2. Defense in depth:
-   - Multiple obfuscation layers
-   - At-rest cache encryption
-   - Runtime metadata protection
-   - Literal protection
+2. **Defense in depth**:
+   - Multiple obfuscation layers (names, literals, control flow, metadata)
+   - At-rest cache encryption (ASCON-128)
+   - Literal protection with weighted strategy selection
 
-3. Reproducible and auditable builds:
+3. **Reproducible and auditable builds**:
    - Deterministic seeds for CI/CD
    - Build nonce for uniqueness and reproducibility
 
@@ -651,13 +643,12 @@ case 4:  // Dead code, never reached
 
 1. Compile-time overhead:
    - ~10–30% slower than standard `go build` (depends on options)
-   - Parallelizable (go build -p)
+   - Parallelisable (go build -p)
    - Efficient caching reduces repeated work
 
 2. Runtime overhead:
    - Name obfuscation: zero runtime overhead (static)
-   - Literal decryption: ~1–2 µs per literal (lazy)
-   - Feistel decryption: ~10 ns per function (amortized)
+   - Literal decryption: ~1–2 µs per literal
    - Control flow: ~5–15% overhead (optional and configurable)
 
 3. Binary size:
@@ -667,19 +658,10 @@ case 4:  // Dead code, never reached
 
 ### 6.3 Compatibility
 
-1. Go version support:
-   - Go 1.25+ fully supported
-   - Backwards compatibility considered where practical
-
-2. Platform support:
-   - GOARCH: amd64, arm64, 386, arm, etc. (all architectures Go supports)
-   - GOOS: linux, darwin, windows, etc.
-   - cgo: supported with limitations on obfuscation
-
-3. Modules & dependencies:
-   - Go modules: supported
-   - Vendor: supported
-   - `replace` directives: supported
+1. Go version support: Go 1.25+ fully supported
+2. Platform support: all GOARCH/GOOS combinations Go supports
+3. Modules, vendor, and `replace` directives: supported
+4. cgo: supported with limitations on obfuscation
 
 ### 6.4 Maintainability
 
@@ -701,10 +683,11 @@ case 4:  // Dead code, never reached
 
 1. Obfuscator plugin system:
    - Add new obfuscators by implementing the `obfuscator` interface
+   - Weighted strategy registry for selection control
    - Literal obfuscators are composable
 
 2. Control flow modes:
-   - Off / XOR / Complex
+   - Off / Directives / Auto / All
    - Configurable via per-function directives
 
 3. Custom patches:
@@ -712,7 +695,7 @@ case 4:  // Dead code, never reached
 
 ---
 
-## 7. Implementation details
+## 7. Implementation Details
 
 ### 7.1 Error handling
 
@@ -721,21 +704,10 @@ Strategies:
 2. Graceful degradation: if cache crypto fails, fall back to plaintext with a warning
 3. Contextual errors: wrap errors using `fmt.Errorf` for context
 
-Example:
-
-```go
-func encryptCache(data any, seed []byte) ([]byte, error) {
-    if len(seed) == 0 {
-        return nil, fmt.Errorf("cache encryption: seed cannot be empty")
-    }
-    return cache.Encrypt(data, seed)
-}
-```
-
 ### 7.2 Concurrency & thread safety
 
 Shared cache:
-- Read-only after initialization — no locks required for reads
+- Read-only after initialisation — no locks required for reads
 - Per-package cache is isolated and avoids contention
 
 Crypto operations:
@@ -744,7 +716,7 @@ Crypto operations:
 
 ### 7.3 Memory management
 
-Optimizations:
+Optimisations:
 1. Lazy loading: packages are loaded only when required
 2. Streaming parsing: ASTs are not retained longer than necessary
 3. Temp files: obfuscated source files are written to disk instead of kept in memory
@@ -762,8 +734,8 @@ GARBLE_WRITE_MEMPROFILES=/tmp garble build ./...
 $GARBLE_SHARED/
 ├── main-cache.gob.enc         # Encrypted shared cache
 ├── pkg-cache/
-│   ├── github.com_user_pkg1.gob.enc
-│   └── github.com_user_pkg2.gob.enc
+│   ├── <action-id-1>.gob.enc
+│   └── <action-id-2>.gob.enc
 └── obfuscated-src/
     ├── pkg1/
     │   ├── file1.go
@@ -787,10 +759,6 @@ Toolexec mechanism:
 $GOTOOLDIR/compile -o output.a obfuscated.go
 ```
 
-Action graph:
-- Garble generates an action graph JSON to determine build order
-- It respects package dependencies
-
 ---
 
 ## 8. ASCII diagrams summary
@@ -812,13 +780,11 @@ User Seed (-seed=...)
      ▼                                ▼
 Package Salt Derivation      Crypto Key Derivation
      │                                │
-     ├─► Name Hashing                 ├─► ASCON Literal Keys
-     │   (per identifier)             │   (per literal)
+     ├─► Name Hashing                 ├─► Per-build SPN cipher keys
+     │   (per identifier)             │   (random S-box + round keys)
      │                                │
-     └─► Import Path Hashing          └─► Feistel Round Keys
-                                          (4x32-bit)
-                                      │
-                                      └─► Cache Encryption Key
+     └─► Import Path Hashing          └─► Cache Encryption Key
+                                          (ASCON-128)
 ```
 
 ### 8.2 Build pipeline: Source → Binary
@@ -841,7 +807,6 @@ main.go, util.go, ...
     ├─► Compile ───────────► .a archive
     │
     └─► Link ──────────────► Obfuscated Binary
-        └─ Inject Runtime Patches
         └─ Strip Debug Info
 ```
 
@@ -859,28 +824,21 @@ main.go, util.go, ...
 │  │ No original names in binary                  │  │
 │  └──────────────────────────────────────────────┘  │
 │                                                    │
-│  Layer 2: Literal Protection (ASCON-128)           │  │
+│  Layer 2: Literal Protection (Random SPN Cipher)   │
 │  ┌──────────────────────────────────────────────┐  │
-│  │ Strings encrypted inline                     │  │
+│  │ Strings encrypted with per-build cipher      │  │
 │  │ Constants obfuscated                         │  │
-│  │ Runtime decryption only                      │  │
+│  │ No detectable crypto signatures              │  │
 │  └──────────────────────────────────────────────┘  │
 │                                                    │
-│  Layer 3: Metadata Hardening (Feistel)             │  │
-│  ┌──────────────────────────────────────────────┐  │
-│  │ funcInfo table encrypted                     │  │
-│  │ Runtime helpers injected                     │  │
-│  │ Format-preserving encryption                 │  │
-│  └──────────────────────────────────────────────┘  │
-│                                                    │
-│  Layer 4: Control Flow Obfuscation (Optional)      │  │
+│  Layer 3: Control Flow Obfuscation (Optional)      │
 │  ┌──────────────────────────────────────────────┐  │
 │  │ Flattening + junk jumps                      │  │
 │  │ Dead code injection                          │  │
 │  │ CFG complexity increase                      │  │
 │  └──────────────────────────────────────────────┘  │
 │                                                    │
-│  Layer 5: Cache Encryption (ASCON-128)             │  │
+│  Layer 4: Cache Encryption (ASCON-128)             │
 │  ┌──────────────────────────────────────────────┐  │
 │  │ Build artifacts encrypted at rest            │  │
 │  │ Authenticated encryption (AEAD)              │  │
@@ -895,20 +853,19 @@ main.go, util.go, ...
 ## Conclusion
 
 Garble is a mature, security-focused Go obfuscator with a modular architecture that balances:
-- Security: standard cryptography and multiple protection layers
-- Performance: acceptable compile- and runtime overheads
-- Usability: simple CLI and transparent Go toolchain integration
-- Maintainability: well-structured, tested, documented codebase
+- **Security**: stealth-first literal encryption with no detectable crypto signatures, plus standard cryptography for cache protection
+- **Performance**: acceptable compile- and runtime overheads
+- **Usability**: simple CLI and transparent Go toolchain integration
+- **Maintainability**: well-structured, tested, documented codebase
 
-The AeonDave/garble fork adds cache encryption, metadata hardening, and enterprise-grade robustness compared to upstream.
+The AeonDave/garble fork adds cache encryption, stealth literal protection, and enterprise-grade robustness compared to upstream.
 
 For security details see SECURITY.md.
-For advanced configuration see FEATURE_TOGGLES.md.
+For advanced configuration see FEATURES.md.
 For control flow specifics see CONTROLFLOW.md.
+For literal encryption design see LITERAL_ENCRYPTION.md.
 
 ---
 
 **Maintainer:** AeonDave
-**Last updated:** 8 October 2025
-**Garble version:** 0.14.x (hardened fork)
-
+**Last updated:** January 2025

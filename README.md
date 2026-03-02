@@ -1,331 +1,276 @@
-# garble hardened
+# garble hardened (Efesto)
 
-> **This is a security-hardened fork of [github.com/burrowers/garble](https://github.com/burrowers/garble)** with significant enhancements to obfuscation and anti-analysis capabilities. See [docs/SECURITY.md](docs/SECURITY.md) for a comprehensive overview of the security architecture and threat model.
+> **Security-hardened fork of [github.com/burrowers/garble](https://github.com/burrowers/garble)** — enhanced obfuscation and anti-analysis for Go binaries.  
+> See [docs/SECURITY.md](docs/SECURITY.md) for the full threat model.
 
-### Installation
+---
 
-Install from this repository:
+## Installation
 
 ```sh
 go install github.com/AeonDave/garble@latest
 ```
 
-Or clone and build locally:
+Or clone and build:
 
 ```sh
 git clone https://github.com/AeonDave/garble
-cd garble
-go install ./...
+cd garble && go install ./...
 ```
 
-**Note**: This fork uses `github.com/AeonDave/garble` as its module path.
+Requires **Go 1.25+**.
 
-### Overview
+---
 
-Obfuscate Go code by wrapping the Go toolchain. Requires Go 1.25 or later.
+## What happens without any flag (`garble build`)
 
-	garble build [build flags] [packages]
+Even with zero user-supplied flags, `garble build` already produces a significantly
+hardened binary compared to a plain `go build`. The table below shows everything
+that is applied **automatically**:
 
-The tool also supports `garble test` to run tests with obfuscated code,
-and `garble run` to obfuscate and execute simple programs.
-Run `garble -h` to see all available commands and flags.
+| Protection | How | Why it matters |
+|---|---|---|
+| **Identifier renaming** | SHA-256(name + seed + nonce) → short base64 hash | Strips function names, type names, and package paths from the binary — tools like GoReSym and `strings` no longer recover them. |
+| **Package path hashing** | Same hash scheme applied to import paths | Prevents import path enumeration by disassemblers (IDA, Ghidra). |
+| **File / position hashing** | File names and line numbers replaced with hashes | Stack traces still work internally but leak no original source paths. |
+| **Random seed** | A fresh cryptographic seed is generated per build | Every build produces different hashes; identical source → different binary, defeating diff-based analysis. |
+| **Build info stripped** | `-buildvcs=false`, `runtime.Version()` → `"unknown"` | `go version -m binary` reveals nothing. |
+| **Module info stripped** | `debug.ReadBuildInfo()` returns empty | No module path, dependency list, or VCS revision. |
+| **Debug info stripped** | `-ldflags="-w -s"` injected automatically | No DWARF sections, no symbol table — disassemblers lose named symbols. |
+| **Build ID removed** | `-buildid=""` | Removes the Go build ID that can fingerprint compiler version and source. |
+| **Trimpath** | `-trimpath` with extended temp dir handling | No `/home/user/go/src/…` paths leak into the binary. |
+| **Export-aware renaming** | Exported names follow Go ABI requirements | The binary still works correctly with reflect, interfaces, plugins. |
 
-### Quick start
+**Result**: A plain `garble build` already makes the binary unreadable to `strings`,
+GoReSym, and basic IDA/Ghidra analysis. But the **actual string values** remain in
+plaintext inside the binary — an analyst running `strings binary | grep password`
+will still find them.
 
-1. Install: `go install github.com/AeonDave/garble@latest`
-2. Obfuscate your binary: `garble -literals -tiny -controlflow=auto build ./cmd/myapp`
-3. Make builds reproducible: provide both a seed and a build nonce
-   - Example: `garble -seed=Z3JhZmY -literals -tiny -controlflow=auto build ./cmd/myapp`
-   - Set `GARBLE_BUILD_NONCE` to a fixed base64 value for identical outputs across runs
+---
 
-See [docs/FEATURE_TOGGLES.md](docs/FEATURE_TOGGLES.md) for a complete flag and environment reference.
+## What each flag adds
 
-### Recommended usage
+### `-literals` — Literal encryption
 
-#### **Basic Obfuscation (Quick Start)**
-```bash
-# Default hardened build (seed is random by default)
+**The single most important flag for protecting secrets.**
+
+| What changes | Detail |
+|---|---|
+| String/byte/numeric literals | Replaced at compile time with encrypted ciphertext + inline decryptor |
+| Cipher | Per-build random SPN (Substitution-Permutation Network), 4-6 rounds, Fisher-Yates 256-byte S-box — no AES, no ASCON, no fixed constants in the output |
+| Strategy diversity | ~60% custom cipher, ~10% each for Swap/Split/Shuffle/Seed — each literal gets a randomly chosen strategy |
+| `-ldflags=-X` strings | Intercepted at parse time, encrypted, and injected via obfuscated `init()` |
+| Key zeroization | Inline scrub after decryption to minimize key lifetime in memory |
+
+**Without `-literals`**: `strings binary | grep API_KEY` → finds it in plaintext.  
+**With `-literals`**: `strings binary | grep API_KEY` → nothing. At runtime the string is decrypted only when needed.
+
+```sh
+# Protect API keys, credentials, URLs
+garble -literals build -ldflags="-X main.apiKey=sk_live_ABC123" ./cmd/myapp
+```
+
+**Trade-offs**: Small binary size increase (~5-15%), minor runtime overhead per literal (decrypt + zeroize).
+
+---
+
+### `-tiny` — Minimal binary size
+
+| What changes | Detail |
+|---|---|
+| Position info | Removed entirely (not just hashed) |
+| Panic/fatal printing | Runtime printing code removed |
+| `GODEBUG` | Ignored at runtime |
+| Symbol names | Additional names omitted from binary sections |
+| Net effect | ~15% smaller binary |
+
+**Without `-tiny`**: Panics print "`goroutine 1 [running]: <hashed>.func1()`" — still reveals structure.  
+**With `-tiny`**: Panics silently crash with no output. `recover` still works.
+
+**Trade-offs**: Debugging is virtually impossible; stack traces are empty.
+
+---
+
+### `-controlflow` — Control-flow obfuscation
+
+Four modes, each adds more protection:
+
+| Mode | What it does | Build time impact |
+|---|---|---|
+| `off` (default) | Nothing | None |
+| `directives` | Obfuscates only functions annotated with `//garble:controlflow` | Minimal |
+| `auto` | Automatically selects safe candidate functions | Moderate |
+| `all` | Obfuscates all eligible functions, most aggressive | Highest |
+
+**What the obfuscation looks like**:
+- Structured `if/else/switch/for` → replaced with opaque jump-table dispatch
+- Dead code injection with plausible but unreachable branches
+- Opaque predicates (always-true/always-false conditions that resist static analysis)
+- XOR-encrypted dispatcher keys
+- Delegate tables to hide real call targets
+
+**Without `-controlflow`**: IDA/Ghidra decompile clean `if/else` structures.  
+**With `-controlflow=auto`**: Decompiler produces unreadable spaghetti with hundreds of switch-cases.
+
+Opt out per function: `//garble:nocontrolflow`
+
+---
+
+### `-seed` — Deterministic builds
+
+| What changes | Detail |
+|---|---|
+| Default (no `-seed`) | Fresh random seed per build — maximum uniqueness |
+| `-seed=random` | Same as default but **prints the seed** for later reproduction |
+| `-seed=<base64>` | Fixed seed — same source + same seed + same nonce = identical binary |
+
+Combine with `GARBLE_BUILD_NONCE=<base64>` for fully deterministic CI/CD builds.
+
+**Without fixed seed**: Every build produces a unique binary (good for stealth, bad for reproducibility).  
+**With fixed seed+nonce**: Byte-identical binaries for auditing, signing, compliance.
+
+---
+
+### `-force-rename` — Rename exported methods
+
+Normally, exported methods that might satisfy interfaces are left unchanged.
+`-force-rename` renames them too.
+
+**Without**: Public API names like `ServeHTTP` remain in the binary.  
+**With**: Even `ServeHTTP` is hashed. May break interface satisfaction — use only when the binary exposes no public APIs.
+
+---
+
+### `-no-cache-encrypt` — Disable cache encryption
+
+By default, garble encrypts its on-disk build cache with ASCON-128 (keyed by the build seed).
+
+**Without this flag**: Cache entries are encrypted — an attacker reading `~/.cache/garble` sees ciphertext.  
+**With this flag**: Cache is plaintext. Only useful for debugging or environments where disk encryption is already in place.
+
+---
+
+### Environment variables
+
+| Variable | Purpose |
+|---|---|
+| `GOGARBLE` | Glob patterns for packages to obfuscate. Default `*` = everything. Example: `GOGARBLE='./internal/...'` |
+| `GARBLE_BUILD_NONCE` | Fixed base64 nonce for reproducible builds (combine with `-seed=<value>`) |
+| `GARBLE_CACHE` | Override cache directory (default: `~/.cache/garble`) |
+| `GARBLE_CONTROLFLOW_DEBUG` | Set to `1` to log skip reasons for control-flow obfuscation |
+
+---
+
+## Recommended configurations
+
+### Default protection (recommended for most cases)
+
+```sh
 garble -literals -tiny -controlflow=auto build ./cmd/myapp
 ```
 
-**What this does:**
-- Obfuscates all package names, function names, and type names
-- Uses a random seed per build (use `-seed=random` to print it for reproducibility)
-- Automatically applies `-trimpath`, `-ldflags="-w -s"`, and build ID stripping
+This enables all major protections. The binary will have:
+- No readable function names, package paths, or file paths
+- All string literals encrypted with per-build random ciphers
+- Control flow obfuscated with jump tables and dead code
+- Minimal binary size with stripped metadata
+- No debug info, no symbol table, no build info
 
----
-
-#### **Production Hardening (Recommended)**
-```bash
-# Maximum security with literal encryption and control-flow obfuscation
-garble -literals -tiny -controlflow=auto build ./cmd/myapp
-```
-
-**What this adds:**
-- ✅ **Literal encryption**: All string/numeric literals encrypted with ASCON-128
-- ✅ **Control-flow obfuscation**: Jump tables and dead code injection (safe mode)
-- ✅ **`-ldflags=-X` protection**: Injected variables (API keys, versions) are encrypted
-- ✅ **Key material hardening**: ASCON key/nonce/cipher are split+interleaved and mixed with external keys (no raw byte arrays)
-- ✅ **Runtime scrubbing**: Inline decrypt zeroizes key/nonce/ciphertext; panic message is obfuscated too
-
-**Use when:**
-- Protecting API keys, credentials, or sensitive strings
-- Preventing static analysis and decompilation
-- Distributing commercial/proprietary software
-
----
-
-#### **Minimal Binary Size**
-```bash
-# Smallest possible binary (15% smaller)
-garble -tiny build ./cmd/myapp
-```
-
-**Trade-offs:**
-- ✅ Strips all panic handlers, runtime positions, and extra metadata
-- ⚠️ Stack traces become useless (no file/line info)
-
-**Use when:**
-- Binary size is critical (embedded systems, mobile apps)
-- Runtime debugging is not needed
-- Distribution channels have size limits
-
----
-
-#### **Reproducible CI/CD Builds**
-```bash
-# Fixed seed + nonce for identical binaries
-GARBLE_BUILD_NONCE=a1b2c3d4e5f6g7h8 garble \
-  -seed=myFixedSeed123 \
-  -literals \
-  -controlflow=auto \
-  build ./cmd/myapp
-```
-
-**Why this matters:**
-- Same source + same seed/nonce = **byte-identical binary**
-- Enables binary verification and supply chain security
-- Required for deterministic builds in CI pipelines
-
-**Use when:**
-- Auditing builds (checksums must match)
-- Distributing signed binaries
-- Compliance requirements for reproducible builds
-
----
-
-#### **Selective Package Obfuscation**
-```bash
-# Only obfuscate internal packages, leave public API readable
-GOGARBLE='./internal/...' garble -seed=random -literals build ./cmd/myapp
-```
-
-**Use when:**
-- Building libraries with public APIs
-- Debugging customer-reported issues (public symbols help)
-- Protecting core logic while keeping interfaces clean
-
----
-
-### What Garble Does Automatically
-
-You **do not need** to specify these flags manually:
-
-| What | How Garble Handles It |
-|------|----------------------|
-| **Path stripping** | Automatically adds `-trimpath` (extended with temp dir handling) |
-| **Debug info** | Forces `-ldflags="-w"` at link time (strips DWARF) |
-| **Symbol table** | Forces `-ldflags="-s"` at link time (strips symbols) |
-| **Build ID** | Automatically removes with `-buildid=""` |
-| **Go version** | Replaces `runtime.Version()` with "unknown" |
-| **VCS metadata** | Adds `-buildvcs=false` (no git commit info) |
-
-See [docs/FEATURE_TOGGLES.md](docs/FEATURE_TOGGLES.md#flags-applied-automatically) for implementation details.
-
-### Additional hardening checklist
-
-Small layers that make analysis slower when you ship binaries:
-
-- **Always** ship with `-literals -tiny -controlflow=auto`.
-- Keep **cache encryption ON** (default); avoid `-no-cache-encrypt` in production.
-- Use the **default random seed** for uniqueness; if you need traceability, use `-seed=random` to print it.
-- Avoid `-debugdir` and `-debug` in production builds (they leak structure).
-- Keep `GOGARBLE='*'` unless you have a very specific reason to exclude packages.
-- Rotate seeds periodically for long-lived products to break cross-build correlation.
-- Keep secrets out of **compile-time const contexts** (array sizes, case labels, `iota` math), as those must stay plaintext.
-
-### Purpose
-
-Produce a binary that works as well as a regular build, but that has as little
-information about the original source code as possible.
-
-The tool is designed to be:
-
-* Coupled with `cmd/go`, to support modules and build caching
-* Deterministic and reproducible, given the same initial source code
-
-### Mechanism
-
-The tool wraps calls to the Go compiler and linker to transform the Go build, in
-order to:
-
-* Replace as many useful identifiers as possible with short base64 hashes
-* Replace package paths with short base64 hashes
-* Replace filenames and position information with short base64 hashes
-* Remove all [build](https://go.dev/pkg/runtime/#Version) and [module](https://go.dev/pkg/runtime/debug/#ReadBuildInfo) information
-* Strip debugging information and symbol tables (automatically via `-ldflags="-w -s"`)
-* [Obfuscate literals](#literal-obfuscation), if the `-literals` flag is given
-* Remove [extra information](#tiny-mode), if the `-tiny` flag is given
-* Apply [control-flow obfuscation](docs/CONTROLFLOW.md), if `-controlflow` is enabled
-
-By default, the tool obfuscates all the packages being built.
-You can manually specify which packages to obfuscate via `GOGARBLE`,
-a comma-separated list of glob patterns matching package path prefixes.
-This format is borrowed from `GOPRIVATE`; see `go help private`.
-
-Note that commands like `garble build` will use the `go` version found in your
-`$PATH`. To use different versions of Go, you can
-[install them](https://go.dev/doc/manage-install#installing-multiple)
-and set up `$PATH` with them. For example, for Go 1.17.1:
+### Reproducible CI/CD
 
 ```sh
-$ go install golang.org/dl/go1.17.1@latest
-$ go1.17.1 download
-$ PATH=$(go1.17.1 env GOROOT)/bin:${PATH} garble build
+GARBLE_BUILD_NONCE=a1b2c3d4e5f6g7h8 \
+  garble -seed=myFixedSeed -literals -tiny -controlflow=auto build ./cmd/myapp
 ```
 
-### Use cases
+### Library with public API
 
-A common question is why a code obfuscator is needed for Go, a compiled language.
-Go binaries include a surprising amount of information about the original source;
-even with debug information and symbol tables stripped, many names and positions
-remain in place for the sake of traces, reflection, and debugging.
-
-Some use cases for Go require sharing a Go binary with the end user.
-If the source code for the binary is private or requires a purchase,
-its obfuscation can help discourage reverse engineering.
-
-A similar use case is a Go library whose source is private or purchased.
-Since Go libraries cannot be imported in binary form, and Go plugins
-[have their shortcomings](https://github.com/golang/go/issues/19282),
-sharing obfuscated source code becomes an option.
-See [#369](https://github.com/burrowers/garble/issues/369).
-
-Obfuscation can also help with aspects entirely unrelated to licensing.
-For example, the `-tiny` flag can make binaries 15% smaller,
-similar to the [common practice in Android](https://developer.android.com/build/shrink-code#obfuscate) to reduce app sizes.
-Obfuscation has also helped some open source developers work around
-anti-virus scans incorrectly treating Go binaries as malware.
-
-### Key flags and environment knobs
-
-- **`-literals`** – Encrypts string and numeric literals using ASCON-128 or multi-layer obfuscation. Essential when protecting API keys, credentials, or sensitive strings.
-- **`-controlflow`** (`off`, `directives`, `auto`, `all`) – Adds control-flow obfuscation with jump tables and dead code. Use `auto` for safe automatic detection.
-- **`-tiny`** – Strips file/line metadata, panic handlers, and runtime positions for 15% smaller binaries. Trade-off: stack traces become useless.
-- **`-seed`** – Provides entropy for name hashing and encryption. Default is random per build; set a fixed value only for reproducible builds (use `-seed=random` to print a random seed).
-- **`GARBLE_BUILD_NONCE`** – Deterministic 32-byte nonce (base64). Required for reproducible builds with fixed seeds.
-- **`GOGARBLE`** – Limits obfuscation to specific packages (glob patterns). Example: `GOGARBLE='./internal/...'` to protect only internal code.
-- **`-no-cache-encrypt`** – Disables ASCON-128 cache encryption. By default Garble encrypts cache entries using the build's random seed.
-
-**Important:** Garble automatically applies `-trimpath`, `-ldflags="-w -s"`, and build ID stripping, so you don't need to specify these manually.
-
-The full matrix of switches, defaults, and automatic flags is documented in [docs/FEATURE_TOGGLES.md](docs/FEATURE_TOGGLES.md).
-
-#### Flag effects matrix (what you gain / what you lose)
-
-| Flag | What you gain | What you lose / trade-offs | Notes |
-|---|---|---|---|
-| `-literals` | Literal protection (strings and numeric literals, incl. `[]byte`/`[N]byte` data) via ASCON-128 or multi-layer obfuscation | Small runtime cost per literal (decrypt + zeroize); some code size increase | Certain compile-time constants must remain in plaintext (array sizes, `case` labels, `iota` math). Packages with `//go:nosplit`/`//go:noescape` etc. skip literal obfuscation for safety (logged). |
-| `-controlflow=off` | Fastest build and runtime | No control-flow obfuscation | Default. |
-| `-controlflow=directives` | Targeted CF obfuscation where you opt-in via `//garble:controlflow` | You must annotate functions manually | Use for hotspot control and minimal overhead. |
-| `-controlflow=auto` | Broad CF obfuscation with safe auto-detection | Higher build time and runtime overhead in obfuscated functions | Skip with `//garble:nocontrolflow` for critical paths. |
-| `-controlflow=all` | Maximum CF obfuscation coverage | Highest build time / runtime overhead; more aggressive transformations | Even with `all`, `//garble:nocontrolflow` still skips. |
-| `-tiny` | Smaller binaries; strips file/line metadata and runtime panic/trace printing | Stack traces become useless; runtime panic output removed; `GODEBUG` ignored | Also reduces symbol/position visibility; does not disable `-literals` or `-controlflow`. |
-| `-seed` | Deterministic obfuscation (reproducible builds) | Identical outputs if seed+nonce fixed | Use `-seed=random` to print a new seed; set `GARBLE_BUILD_NONCE` for full reproducibility. |
-| `-no-cache-encrypt` | Faster cache access in some environments | Cache contents are stored in plaintext | Does not affect obfuscation quality of final binaries. |
-
-### Literal obfuscation
-
-Using the `-literals` flag causes literal expressions such as strings to be
-replaced with more complex expressions that resolve to the same value at run time.
-This feature is opt-in, as it can cause slow-downs depending on the input code and size of literals.
-
-Garble uses multiple obfuscation strategies for defense-in-depth:
-* ASCON-128 authenticated encryption with inline decryption code (used frequently)
-* Irreversible simple obfuscator for small and performance-sensitive cases
-* Compile-time constant rewriting: eligible string constants are downgraded to package-scoped vars so they can flow through the same literal obfuscators
-
-When `-literals` is enabled, **all** literal obfuscation layers are always active
-(cryptography + randomized obfuscators). There is no supported switch to disable
-the random techniques; if a strategy ever causes problems, we fix it rather than
-turn it off.
-
-Hardening details:
-- ASCON key/nonce/cipher are reconstructed from interleaved slices and external-key mixing.
-- Inline decryptors zeroize key/nonce/ciphertext (and auth tag) after use.
-- Authentication failure panics use obfuscated strings (no cleartext panic markers).
-
-Notes and limits
-- String constants that must remain compile-time values (array lengths, `iota` math, `case` labels, etc.) are preserved to keep the program valid and may stay in plaintext.
-- Packages that include low-level directives like `//go:nosplit` or `//go:noescape` skip literal obfuscation; garble logs the skip to avoid unsafe runtime behavior.
-- Strings injected via `-ldflags=-X` are **fully protected**: the flag is sanitized at parse time, and the value is rehydrated as an obfuscated init-time assignment (ASCON-128 or multi-layer simple obfuscation).
-- Consequences: expect a small runtime cost per literal (decrypt + zeroization) and minor code size growth from inline helpers.
-
-Dive into the full design (HKDF key derivation, obfuscator selection, and external key mixing) in [docs/LITERAL_ENCRYPTION.md](docs/LITERAL_ENCRYPTION.md).
-
-**Example - Protecting API Keys**:
 ```sh
-# Traditional build - API key visible in binary
-go build -ldflags="-X main.apiKey=sk_live_ABC123"
-strings binary | grep sk_live  # ❌ Found in plaintext!
-
-# Garble build - API key encrypted
-garble -literals build -ldflags="-X main.apiKey=sk_live_ABC123"
-strings binary | grep sk_live  # ✅ Not found - encrypted!
-# Runtime still works: the key is decrypted during init()
+GOGARBLE='./internal/...' garble -literals build ./cmd/myapp
 ```
 
-### Tiny mode
+Protects internal code while keeping public interface names readable.
 
-With the `-tiny` flag, even more information is stripped from the Go binary.
-Position information is removed entirely, rather than being obfuscated.
-Runtime code which prints panics, fatal errors, and trace/debug info is removed.
-Many symbol names are also omitted from binary sections at link time.
-All in all, this can make binaries about 15% smaller.
+---
 
-With this flag, no panics or fatal runtime errors will ever be printed, but they
-can still be handled internally with `recover` as normal. In addition, the
-`GODEBUG` environmental variable will be ignored.
+## Security posture
 
-Note that this flag can make debugging crashes harder, as a panic will simply
-exit the entire program without printing a stack trace, and source code
-positions and many names are removed.
+Garble applies **defense in depth** — multiple independent layers ensure that no single
+bypass defeats all protections. For the full threat model, see [docs/SECURITY.md](docs/SECURITY.md).
 
-### Control flow obfuscation
+| Layer | What it stops |
+|---|---|
+| **Name hashing** | Symbol recovery tools (GoReSym, IDA Go analysis, Ghidra plugins) return empty results |
+| **Literal encryption** | `strings`, YARA, and byte-pattern scanners find no plaintext secrets |
+| **No fixed crypto constants** | findcrypt / YARA S-box signatures match nothing — S-box is random per build |
+| **Per-build uniqueness** | No universal signature or rule can match all builds |
+| **Polymorphic decryption stubs** | Each literal site has unique variable names and randomly selected MBA (Mixed Boolean-Arithmetic) XOR encodings — pattern-matching deobfuscators fail |
+| **Control-flow flattening** | Decompilers produce unreadable output; analyst time increases significantly |
+| **Opaque predicates & dead code** | Static analysis and emulation boundary detection are confused by unreachable branches |
+| **Reflect ABI hardening** | Injected runtime code uses short opaque identifiers — decompilers see no recognisable names |
+| **Build metadata stripping** | `go version -m`, `debug.ReadBuildInfo()`, DWARF, symbol table — all empty |
+| **Cache encryption** | On-disk build cache is ASCON-128 encrypted, keyed to the build seed |
 
-See: [docs/CONTROLFLOW.md](docs/CONTROLFLOW.md)
+**Known limitation**: Go's `runtime.slicebytetostring` is an unavoidable convergence
+point for all `[]byte → string` conversions. Emulation-based tools (Unicorn/vstack)
+can still recover decrypted strings by emulating each stub individually. Our mitigations
+(MBA, polymorphism, control-flow) raise the cost of automated recovery but do not
+eliminate it. See [docs/ROADMAP.md](docs/ROADMAP.md) for planned improvements.
 
-### Security snapshot
+---
 
-Recent releases focus on raising the bar for reverse engineers while keeping the tooling practical:
+## Additional hardening checklist
 
-- Fresh names every build – Garble mixes your seed with a per-build nonce, so identical sources still produce different symbol hashes unless you fix both values.
-- Encrypted literals when `-literals` is enabled – many string literals are protected with inline ASCON, raising the cost of static string scraping.
-- Hardened literals – key/nonce/cipher material is interleaved + scrubbed after decryption.
-- Hardened control-flow – dispatcher keys are obfuscated and include opaque predicates to slow static recovery.
-- Hardened cache – when a seed is present (and `-no-cache-encrypt` is not set), Garble encrypts its on-disk cache automatically.
+Things that complement garble but are outside its scope:
 
-Want the deep dive? See [docs/LITERAL_ENCRYPTION.md](docs/LITERAL_ENCRYPTION.md) for literal internals and [docs/SECURITY.md](docs/SECURITY.md) for the broader threat model.
+- **Always ship with** `-literals -tiny -controlflow=auto` — this is the baseline.
+- **Keep cache encryption ON** (default) — avoid `-no-cache-encrypt` in production.
+- **Rotate seeds** for long-lived products to defeat cross-build correlation.
+- **Keep secrets out of compile-time const contexts** — array sizes, `case` labels,
+  `iota` math must stay plaintext.
+- **Use `GOGARBLE='*'`** unless you need specific packages unobfuscated.
+- **Avoid `-debugdir` and `-debug`** in production — they leak obfuscation structure.
+- **UPX/packing**: garble does not pack binaries. If binary size or entropy analysis is
+  a concern, consider adding a packer as a post-build step — but note that packers add
+  their own detection signatures.
+- **Code signing**: Sign your final binary to prevent tampering and add legitimacy.
+- **Supply-chain**: Pin your garble version and Go version for reproducible audits.
 
-### Hardening pipeline
+---
 
-The diagram below shows the full obfuscation flow when all hardening flags are active
-(`-literals -tiny -controlflow=all`). Each stage applies independently; skipping a
-flag disables only its branch.
+## How garble works
+
+The tool wraps calls to the Go compiler and linker to transform the build:
+
+1. **Parse & type-check** — Load all packages via `go/parser` + `go/types`
+2. **Name hashing** — Replace identifiers with SHA-256(seed + nonce + name) → base64
+3. **Literal encryption** (`-literals`) — Replace string/byte/numeric literals with ciphertext + inline decryptor
+4. **Control-flow** (`-controlflow`) — SSA transform → jump-table dispatch + dead code
+5. **Position obfuscation** — Hash file/line info (or remove entirely with `-tiny`)
+6. **Linker patches** — Strip symbols, DWARF, build ID, VCS info
+7. **Cache encryption** — Encrypt build cache with ASCON-128 AEAD
+
+Garble obfuscates one package at a time (matching Go's compilation model) and fully
+supports Go's build cache for incremental builds.
+
+### Speed
+
+`garble build` takes about 2× a normal `go build` — it does two builds internally.
+The first to load and type-check the code, the second to compile the obfuscated output.
+Incremental builds are cached normally.
+
+### Determinism
+
+Garble builds are deterministic: same source + same seed + same nonce = identical binary.
+By default, a random seed is generated per build for maximum uniqueness.
+
+---
+
+## Hardening pipeline
 
 ```
                     ┌──────────────────────────┐
-                    │     Go Source Files       │
+                    │     Go Source Files      │
                     └────────────┬─────────────┘
                                  │
                     ┌────────────▼─────────────┐
@@ -334,145 +279,85 @@ flag disables only its branch.
                     └────────────┬─────────────┘
                                  │
               ┌──────────────────┼──────────────────┐
-              ▼                  ▼                   ▼
+              ▼                  ▼                  ▼
    ┌──────────────────┐ ┌───────────────┐ ┌─────────────────┐
    │  Name Hashing    │ │  -literals    │ │  -controlflow   │
    │ ─────────────────│ │ ──────────────│ │ ────────────────│
-   │ SHA-256 + seed   │ │ HKDF-SHA256   │ │ SSA transform   │
-   │ + per-build nonce│ │ key derivation│ │ jump tables     │
-   │ base64 6-12 char │ │      │        │ │ dead code inject│
-   │ export-preserving│ │      ▼        │ │ opaque predicate│
-   └──────────────────┘ │ ┌───────────┐ │ │ XOR dispatcher  │
-                         │ │ Strategy  │ │ │ delegate tables │
-                         │ │ Selection │ │ └─────────────────┘
-                         │ └─┬───────┬─┘ │
-                         │   │       │   │
-                         │   ▼       ▼   │
-                         │ ASCON  Irrev. │
-                         │ -128   SBox+  │
-                         │ AEAD   Feistel│
-                         │   │       │   │
-                         │   ▼       ▼   │
-                         │ Key hardening │
-                         │ interleave +  │
-                         │ external keys │
-                         │ + zeroization │
-                         └───────┬───────┘
-                                 │
-                    ┌────────────▼─────────────┐
-                    │  Position Obfuscation     │
-                    │  filenames → hashes       │
-                    │  (-tiny: removed entirely)│
-                    └────────────┬─────────────┘
-                                 │
-                    ┌────────────▼─────────────┐
-                    │  Linker Patches           │
-                    │  strip symbols (-s)       │
-                    │  strip DWARF  (-w)        │
-                    │  drop build ID            │
-                    │  Feistel symbol table     │
-                    └────────────┬─────────────┘
-                                 │
-                    ┌────────────▼─────────────┐
-                    │  Cache Encryption         │
-                    │  ASCON-128 AEAD           │
-                    │  SHA-256 derived keys     │
-                    └────────────┬─────────────┘
-                                 │
-                    ┌────────────▼─────────────┐
-                    │   Hardened Binary         │
-                    └──────────────────────────┘
+   │ SHA-256 + seed   │ │ Weighted      │ │ SSA transform   │
+   │ + per-build nonce│ │ strategy      │ │ jump tables     │
+   │ base64 6-12 char │ │ selection     │ │ dead code inject│
+   │ export-preserving│ │      │        │ │ opaque predicate│
+   └──────────────────┘ │      ▼        │ │ XOR dispatcher  │
+                        │ ┌───────────┐ │ │ delegate tables │
+                        │ │ Per-build │ │ └─────────────────┘
+                        │ │ random    │ │
+                        │ │ cipher    │ │
+                        │ │ (SPN)     │ │
+                        │ ├───────────┤ │
+                        │ │ Swap/     │ │
+                        │ │ Split/    │ │
+                        │ │ Shuffle/  │ │
+                        │ │ Seed      │ │
+                        │ └─────┬─────┘ │
+                        │       │       │
+                        │       ▼       │
+                        │ Key zeroize   │
+                        │ after decrypt │
+                        └───────┬───────┘
+                                │
+                   ┌────────────▼──────────────┐
+                   │  Position Obfuscation     │
+                   │  filenames → hashes       │
+                   │  (-tiny: removed entirely)│
+                   └────────────┬──────────────┘
+                                │
+                   ┌────────────▼─────────────┐
+                   │  Linker Patches          │
+                   │  strip symbols (-s)      │
+                   │  strip DWARF  (-w)       │
+                   │  drop build ID           │
+                   └────────────┬─────────────┘
+                                │
+                   ┌────────────▼─────────────┐
+                   │  Cache Encryption        │
+                   │  ASCON-128 AEAD          │
+                   │  SHA-256 derived keys    │
+                   └────────────┬─────────────┘
+                                │
+                   ┌────────────▼─────────────┐
+                   │   Hardened Binary        │
+                   └──────────────────────────┘
 ```
 
-### Hardening subsystems
+---
 
-| # | Subsystem | Algorithm | Purpose | Test coverage |
-|---|-----------|-----------|---------|---------------|
-| 1 | **Name hashing** | SHA-256 + seed + nonce → base64 | Replace identifiers with irreversible hashes; export-preserving | Collision resistance, export preservation, length distribution |
-| 2 | **Literal encryption (ASCON)** | ASCON-128 AEAD (NIST LWC winner) | Encrypt string/byte/numeric literals at compile time; inline decrypt at runtime | NIST KAT vectors, forgery resistance, avalanche, fuzz roundtrip |
-| 3 | **Literal encryption (Irreversible)** | AES S-Box + 128-bit Feistel (4 rounds) | Lightweight obfuscation for small literals | SBox bijectivity, roundtrip, non-recoverability, byte distribution |
-| 4 | **Key derivation** | HKDF-SHA256 (RFC 5869) | Per-literal unique keys with context separation (`ascon:v1` / `irreversible:v1`) | Counter monotonicity, cross-file/salt independence, determinism |
-| 5 | **Key hardening** | Interleave + external-key XOR + zeroize | Prevent raw key/nonce/ciphertext from appearing in binary | AST structure tests, external key ref tracking |
-| 6 | **Control-flow flattening** | SSA → jump table dispatch | Replace structured control flow with opaque dispatcher | Semantic preservation, mode selection, hardening prologues |
-| 7 | **Dispatcher hardening** | XOR keys + opaque predicates + delegate tables | Resist static dispatcher recovery | Prologue scope tests, dead code injection |
-| 8 | **Position obfuscation** | SHA-256 hash / full removal (`-tiny`) | Remove or hash file names and line numbers | Position stripping via testscripts |
-| 9 | **Symbol table encryption** | 32-bit Feistel (4 rounds, tweaked) | Encrypt runtime symbol name offsets | Bijection, avalanche, distribution, key independence |
-| 10 | **Cache encryption** | ASCON-128 AEAD + SHA-256 keys | Encrypt build cache on disk | Roundtrip, tamper detection, key derivation |
-| 11 | **Linker patches** | Strip `-w -s`, build ID removal, VCS suppression | Remove debug info and metadata from final binary | Testscript integration |
-| 12 | **Compile-time const rewrite** | Const → var demotion | Allow string constants to flow through literal obfuscators | Transformer directive tests |
+## Use cases
 
-### Speed
+**Why obfuscate a compiled language?** Go binaries include a surprising amount of
+source metadata: function names, type names, file paths, module info, even with debug
+info stripped. Garble removes this.
 
-`garble build` should take about twice as long as `go build`, as it needs to
-complete two builds. The original build, to be able to load and type-check the
-input code, and then the obfuscated build.
+- **Commercial software** — Protect proprietary algorithms and business logic
+- **API keys & credentials** — `-literals` encrypts `sk_live_…` strings that `go build` leaves in plaintext
+- **Anti-reverse-engineering** — Combined with `-controlflow`, decompilers produce unusable output
+- **Binary size** — `-tiny` gives ~15% reduction (similar to Android R8/ProGuard obfuscation)
+- **AV false positives** — Some Go binaries trigger AV heuristics due to large size and uncommon structure; obfuscation can change the signature enough to avoid these
 
-Garble obfuscates one package at a time, mirroring how Go compiles one package
-at a time. This allows Garble to fully support Go's build cache; incremental
-`garble build` calls should only re-build and re-obfuscate modified code.
+---
 
-Note that the first call to `garble build` may be comparatively slow,
-as it has to obfuscate each package for the first time. This is akin to clearing
-`GOCACHE` with `go clean -cache` and running a `go build` from scratch.
+## Caveats
 
-Garble also makes use of its own cache to reuse work, akin to Go's `GOCACHE`.
-It defaults to a directory under your user's cache directory,
-such as `~/.cache/garble`, and can be placed elsewhere by setting `GARBLE_CACHE`.
+- Exported methods are not renamed by default (needed for interfaces). Use `-force-rename` to override.
+- No way to exclude specific files — if obfuscation causes a bug, file an issue.
+- `init()` ordering may change because import paths are hashed.
+- Go plugins not supported ([#87](https://github.com/burrowers/garble/issues/87)).
+- Garble requires `git` for linker patches.
+- `runtime.GOROOT` and `debug.ReadBuildInfo` return empty in obfuscated binaries.
+  This [can affect timezone loading](https://github.com/golang/go/issues/51473#issuecomment-2490564684).
 
-### Determinism and seeds
+---
 
-Just like Go, garble builds are deterministic and reproducible in nature.
-This has significant benefits, such as caching builds and reproducible outputs.
+## Contributing
 
-By default, garble will obfuscate each package in a unique way,
-which will change if its build input changes: the version of garble, the version
-of Go, the package's source code, or any build parameter such as GOOS or -tags.
-This is a reasonable default since guessing those inputs is very hard.
-
-You can use the `-seed` flag to provide your own obfuscation randomness seed.
-Reusing the same seed can help produce the same code obfuscation,
-which can help when debugging or reproducing problems.
-Regularly rotating the seed can also help against reverse-engineering in the long run,
-as otherwise one can look at changes in how Go's standard library is obfuscated
-to guess when the Go or garble versions were changed across a series of builds.
-
-By default, garble generates a random seed per build. Use `-seed=random` to print the generated seed for reproducibility.
-Set `-seed=<base64>` only when you need reproducible builds.
-
-In addition to the seed, garble derives a build nonce which is mixed into every obfuscated name.
-The nonce can be provided explicitly via the `GARBLE_BUILD_NONCE` environment variable.
-For reproducible builds, preserve both the seed and the nonce used for the original build.
-
-
-### Caveats
-
-Most of these can improve with time and effort. The purpose of this section is
-to document the current shortcomings of this tool.
-
-* Exported methods are never obfuscated at the moment, since they could
-  be required by interfaces. This area is a work in progress; see
-  [#3](https://github.com/burrowers/garble/issues/3).
-
-* Aside from `GOGARBLE` to select patterns of packages to obfuscate,
-  there is no supported way to exclude obfuscating a selection of files or packages.
-  More often than not, a user would want to do this to work around a bug; please file the bug instead.
-
-* Go programs [are initialized](https://go.dev/ref/spec#Program_initialization) one package at a time,
-  where imported packages are always initialized before their importers,
-  and otherwise they are initialized in the lexical order of their import paths.
-  Since garble obfuscates import paths, this lexical order may change arbitrarily.
-
-* Go plugins are not currently supported; see [#87](https://github.com/burrowers/garble/issues/87).
-
-* Garble requires `git` to patch the linker. That can be avoided once go-gitdiff
-  supports [non-strict patches](https://github.com/bluekeyes/go-gitdiff/issues/30).
-
-* APIs like [`runtime.GOROOT`](https://pkg.go.dev/runtime#GOROOT)
-  and [`runtime/debug.ReadBuildInfo`](https://pkg.go.dev/runtime/debug#ReadBuildInfo)
-  will not work in obfuscated binaries. This [can affect loading timezones](https://github.com/golang/go/issues/51473#issuecomment-2490564684), for example.
-
-### Contributing
-
-We welcome new contributors. If you would like to contribute, see
-[CONTRIBUTING.md](CONTRIBUTING.md) as a starting point.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 

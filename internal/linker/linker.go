@@ -21,8 +21,7 @@ import (
 )
 
 const (
-	TinyEnv        = "GARBLE_LINK_TINY"
-	FeistelSeedEnv = "LINK_SEED" // Phase 2: Feistel seed (base64)
+	TinyEnv = "_XLINK_TINY"
 )
 
 //go:embed patches/*/*.patch

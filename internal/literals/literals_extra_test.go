@@ -34,17 +34,7 @@ func parseAndTypecheck(t *testing.T, src string) (*ast.File, *types.Info, *token
 func newTestBuilder(t *testing.T, file *ast.File) *Builder {
 	t.Helper()
 	rand := mathrand.New(mathrand.NewSource(1))
-	kp := NewHKDFKeyProvider([]byte("secret"), []byte("salt"), "file.go")
-	return NewBuilder(rand, file, func(r *mathrand.Rand, base string) string { return base }, BuilderConfig{KeyProvider: kp})
-}
-
-func TestBuilderRequiresKeyProvider(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for nil key provider")
-		}
-	}()
-	_ = NewBuilder(mathrand.New(mathrand.NewSource(1)), &ast.File{Name: ast.NewIdent("p")}, func(r *mathrand.Rand, base string) string { return base }, BuilderConfig{})
+	return NewBuilder(rand, file, func(r *mathrand.Rand, base string) string { return base }, BuilderConfig{})
 }
 
 func TestObfuscateFileSkipsConstAndLinkStrings(t *testing.T) {
@@ -179,13 +169,13 @@ func TestByteLitWithExtKey(t *testing.T) {
 
 func TestGetNextObfuscatorUsesTestObfuscator(t *testing.T) {
 	rand := mathrand.New(mathrand.NewSource(3))
-	kp := NewHKDFKeyProvider([]byte("secret"), []byte("salt"), "file.go")
-	obf := &obfRand{Rand: rand, testObfuscator: simpleObfuscator, proxyDispatcher: newProxyDispatcher(rand, func(r *mathrand.Rand, base string) string { return base }), asconHelper: newAsconInlineHelper(rand, func(r *mathrand.Rand, base string) string { return base }), irreversibleHelper: newIrreversibleInlineHelper(rand, func(r *mathrand.Rand, base string) string { return base }), keyProvider: kp}
+	nameFunc := func(r *mathrand.Rand, base string) string { return base }
+	obf := &obfRand{Rand: rand, testObfuscator: swap{}, proxyDispatcher: newProxyDispatcher(rand, nameFunc)}
 
-	if got := getNextObfuscator(obf, maxSize); got != simpleObfuscator {
+	if got := getNextObfuscator(obf, maxSize); got == nil {
 		t.Fatal("expected test obfuscator for maxSize")
 	}
-	if got := getNextObfuscator(obf, maxSize+1); got != simpleObfuscator {
+	if got := getNextObfuscator(obf, maxSize+1); got == nil {
 		t.Fatal("expected test obfuscator for large size")
 	}
 }

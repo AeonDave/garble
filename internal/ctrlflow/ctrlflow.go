@@ -21,10 +21,10 @@ import (
 )
 
 const (
-	mergedFileName    = "GARBLE_controlflow.go"
+	mergedFileName    = "_cf_merged.go"
 	directiveName     = "//garble:controlflow"
 	skipDirectiveName = "//garble:nocontrolflow"
-	importPrefix      = "___garble_import"
+	importPrefix      = "___zi"
 
 	defaultBlockSplits   = 0
 	defaultJunkJumps     = 0
