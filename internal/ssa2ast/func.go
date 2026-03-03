@@ -69,6 +69,15 @@ type funcConverter struct {
 	valueNameMap        map[ssa.Value]string
 	ssaValueRemap       map[ssa.Value]ast.Expr
 	markerInstrCallback func(map[string]types.Type) []ast.Stmt
+	// namedResultAllocs maps *ssa.Alloc values that correspond to named
+	// result parameters to the result parameter name. When a named return
+	// is address-taken (e.g., captured by a defer closure), SSA creates a
+	// heap Alloc for it. We must generate `&resultName` instead of `new(T)`
+	// so that the named return variable and the pointer share the same
+	// storage. Without this, defer+recover cannot update the actual return
+	// value because the closure writes to the heap Alloc while the return
+	// statement reads from the (unmodified) named return variable.
+	namedResultAllocs map[*ssa.Alloc]string
 }
 
 func Convert(ssaFunc *ssa.Function, cfg *ConverterConfig) (*ast.FuncDecl, error) {
@@ -584,12 +593,20 @@ func (fc *funcConverter) convertBlock(astFunc *AstFunc, ssaBlock *ssa.BasicBlock
 		var stmt ast.Stmt
 		switch instr := instr.(type) {
 		case *ssa.Alloc:
-			varType := instr.Type().Underlying().(*types.Pointer).Elem()
-			varExpr, err := fc.tc.Convert(varType)
-			if err != nil {
-				return err
+			if resultName, ok := fc.namedResultAllocs[instr]; ok {
+				// Named return captured by a closure (e.g., defer).
+				// Use &resultName so the pointer and the named return
+				// share the same storage, allowing defers to modify
+				// the return value through the pointer.
+				stmt = defineVar(instr, &ast.UnaryExpr{Op: token.AND, X: ast.NewIdent(resultName)})
+			} else {
+				varType := instr.Type().Underlying().(*types.Pointer).Elem()
+				varExpr, err := fc.tc.Convert(varType)
+				if err != nil {
+					return err
+				}
+				stmt = defineVar(instr, ah.CallExprByName("new", varExpr))
 			}
-			stmt = defineVar(instr, ah.CallExprByName("new", varExpr))
 		case *ssa.BinOp:
 			xExpr, err := fc.convertSsaValueNonExplicitNil(instr.X)
 			if err != nil {
@@ -840,6 +857,11 @@ func (fc *funcConverter) convertBlock(astFunc *AstFunc, ssaBlock *ssa.BasicBlock
 			phiName := fc.getVarName(instr)
 			astFunc.Vars[phiName] = instr.Type()
 
+			if len(instr.Edges) != len(ssaBlock.Preds) {
+				return fmt.Errorf("phi edges/preds mismatch in block %d: %d edges vs %d preds",
+					ssaBlock.Index, len(instr.Edges), len(ssaBlock.Preds))
+			}
+
 			for predIdx, edge := range instr.Edges {
 				edgeExpr, err := fc.convertSsaValue(edge)
 				if err != nil {
@@ -847,6 +869,10 @@ func (fc *funcConverter) convertBlock(astFunc *AstFunc, ssaBlock *ssa.BasicBlock
 				}
 
 				blockIdx := ssaBlock.Preds[predIdx].Index
+				if blockIdx < 0 || blockIdx >= len(astFunc.Blocks) {
+					return fmt.Errorf("phi predecessor index %d out of range [0, %d) in block %d",
+						blockIdx, len(astFunc.Blocks), ssaBlock.Index)
+				}
 				astFunc.Blocks[blockIdx].Phi = append(astFunc.Blocks[blockIdx].Phi, ah.AssignStmt(ast.NewIdent(phiName), edgeExpr))
 			}
 		case *ssa.Range:
@@ -1336,6 +1362,38 @@ func (fc *funcConverter) convert(ssaFunc *ssa.Function) (*ast.FuncDecl, error) {
 			fc.valueNameMap[ssaFunc.Params[paramStart+i]] = name
 		}
 	}
+
+	// Detect named result parameters that are address-taken (heap-escaped).
+	// In SSA, these appear as Alloc instructions with Comment matching the
+	// result parameter name and Heap=true. After control-flow flattening the
+	// alloc may no longer be in block 0, so we scan all blocks. By mapping
+	// them here, convertBlock will generate &resultName instead of new(T).
+	if sig := ssaFunc.Signature; sig != nil && sig.Results() != nil {
+		results := sig.Results()
+		namedResults := make(map[string]bool)
+		for i := range results.Len() {
+			if name := results.At(i).Name(); name != "" {
+				namedResults[name] = true
+			}
+		}
+		if len(namedResults) > 0 {
+			for _, block := range ssaFunc.Blocks {
+				for _, instr := range block.Instrs {
+					alloc, ok := instr.(*ssa.Alloc)
+					if !ok {
+						continue
+					}
+					if alloc.Heap && namedResults[alloc.Comment] {
+						if fc.namedResultAllocs == nil {
+							fc.namedResultAllocs = make(map[*ssa.Alloc]string)
+						}
+						fc.namedResultAllocs[alloc] = alloc.Comment
+					}
+				}
+			}
+		}
+	}
+
 	funcStmts, err := fc.convertToStmts(ssaFunc)
 	if err != nil {
 		return nil, err

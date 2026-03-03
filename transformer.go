@@ -131,6 +131,12 @@ type transformer struct {
 	linkerInitInjected bool
 	constTransforms    map[*types.Const]*consts.Transform
 	skipLiterals       bool
+
+	// protectedMethods maps method names to interfaces from non-obfuscated
+	// packages (including predeclared interfaces like "error"). Methods
+	// satisfying these interfaces must not be renamed even with -force-rename,
+	// because the interface method names remain unchanged.
+	protectedMethods map[string][]*types.Interface
 }
 
 type compileContext struct {
@@ -619,6 +625,9 @@ func (tf *transformer) prepareObfuscationState(files []*ast.File, ssaPkg *ssa.Pa
 				consts.RewriteDecls(file, tf.info, tf.constTransforms)
 			}
 		}
+	}
+	if flagForceRename {
+		tf.protectedMethods = tf.collectProtectedMethods()
 	}
 	return nil
 }
@@ -1318,8 +1327,18 @@ func (tf *transformer) transformGoFile(file *ast.File, filePath string) *ast.Fil
 			} else {
 				debugName = "method"
 			}
-			if !flagForceRename && obj.Exported() && sign.Recv() != nil {
-				return true // might implement an interface
+			if obj.Exported() && sign.Recv() != nil {
+				if !flagForceRename {
+					return true // might implement an interface
+				}
+				// With -force-rename, still protect methods that satisfy
+				// interfaces from non-obfuscated packages (e.g., error),
+				// and methods whose names must be kept because they originate
+				// from non-obfuscated embedded types or satisfy interfaces
+				// whose implementations include such methods.
+				if tf.methodSatisfiesExternalInterface(obj) || tf.isMethodFrozenDynamic(obj) {
+					return true
+				}
 			}
 			switch name {
 			case "main", "init", "TestMain":
@@ -1327,6 +1346,15 @@ func (tf *transformer) transformGoFile(file *ast.File, filePath string) *ast.Fil
 			}
 			if strings.HasPrefix(name, "Test") && typesutil.IsTestSignature(sign) {
 				return true // don't break tests
+			}
+			// For methods with -force-rename, use a package-independent
+			// hash so that interface satisfaction works across packages.
+			if flagForceRename && sign.Recv() != nil {
+				node.Name = hashMethodGlobal(name)
+				if flagDebug { // TODO(mvdan): remove once https://go.dev/issue/53465 if fixed
+					log.Printf("%s %q hashed globally to %q", debugName, name, node.Name)
+				}
+				return true
 			}
 		default:
 			return true // we only want to rename the above
@@ -1516,4 +1544,199 @@ func (tf *transformer) transformLink(args []string) ([]string, error) {
 
 	flags = flagSetValue(flags, "-importcfg", newImportCfg)
 	return append(flags, args...), nil
+}
+
+// collectProtectedMethods builds a set of method names mapped to interfaces
+// from non-obfuscated packages (and predeclared interfaces like "error").
+// Any concrete method whose name appears here and whose receiver type satisfies
+// the interface must NOT be renamed, because the interface side is left as-is.
+func (tf *transformer) collectProtectedMethods() map[string][]*types.Interface {
+	result := make(map[string][]*types.Interface)
+
+	// Predeclared interface: error → Error() string
+	if obj := types.Universe.Lookup("error"); obj != nil {
+		if iface, ok := obj.Type().Underlying().(*types.Interface); ok {
+			for i := range iface.NumMethods() {
+				m := iface.Method(i)
+				result[m.Name()] = append(result[m.Name()], iface)
+			}
+		}
+	}
+
+	// Traverse all transitively imported packages and collect interfaces
+	// from those that are NOT being obfuscated.
+	visited := make(map[string]bool)
+	var visit func(pkg *types.Package)
+	visit = func(pkg *types.Package) {
+		if pkg == nil || visited[pkg.Path()] {
+			return
+		}
+		visited[pkg.Path()] = true
+
+		lpkg, err := listPackage(tf.curPkg, pkg.Path())
+		if err != nil {
+			return
+		}
+
+		if !lpkg.ToObfuscate {
+			scope := pkg.Scope()
+			for _, name := range scope.Names() {
+				obj := scope.Lookup(name)
+				tn, ok := obj.(*types.TypeName)
+				if !ok {
+					continue
+				}
+				iface, ok := tn.Type().Underlying().(*types.Interface)
+				if !ok {
+					continue
+				}
+				for j := range iface.NumMethods() {
+					m := iface.Method(j)
+					result[m.Name()] = append(result[m.Name()], iface)
+				}
+			}
+		}
+
+		for _, imp := range pkg.Imports() {
+			visit(imp)
+		}
+	}
+
+	for _, imp := range tf.pkg.Imports() {
+		visit(imp)
+	}
+
+	return result
+}
+
+// methodSatisfiesExternalInterface reports whether the given method's receiver
+// type implements any interface from a non-obfuscated package that demands a
+// method of the same name. When true, the method must not be renamed.
+func (tf *transformer) methodSatisfiesExternalInterface(fn *types.Func) bool {
+	ifaces, ok := tf.protectedMethods[fn.Name()]
+	if !ok {
+		return false
+	}
+	recv := fn.Signature().Recv()
+	if recv == nil {
+		return false
+	}
+
+	recvType := recv.Type()
+	for _, iface := range ifaces {
+		if types.Implements(recvType, iface) {
+			return true
+		}
+		// Also check pointer-to-receiver for value receiver methods.
+		if _, isPtr := recvType.(*types.Pointer); !isPtr {
+			if types.Implements(types.NewPointer(recvType), iface) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isMethodFrozenDynamic checks whether the given method must keep its original
+// name. This is true when the method originates from a non-obfuscated package
+// (e.g., promoted via embedding from an unobfuscated type), or when the
+// receiver is an interface and some concrete type in the interface's defining
+// package implements the interface with a method from a non-obfuscated source.
+// Unlike a pre-computed global name set, this check is per-type and therefore
+// always consistent across compilation units.
+func (tf *transformer) isMethodFrozenDynamic(fn *types.Func) bool {
+	sign := fn.Signature()
+	if sign.Recv() == nil {
+		return false
+	}
+	methodName := fn.Name()
+	recvType := sign.Recv().Type()
+
+	// For concrete receivers, check if the method originates from a
+	// non-obfuscated package (e.g. promoted from an unobfuscated embedded type).
+	if _, isIface := recvType.Underlying().(*types.Interface); !isIface {
+		if isMethodFromNonObfuscatedPkg(tf.curPkg, recvType, methodName) {
+			return true
+		}
+		if _, isPtr := recvType.(*types.Pointer); !isPtr {
+			if isMethodFromNonObfuscatedPkg(tf.curPkg, types.NewPointer(recvType), methodName) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// For interface receivers, check if any type in the interface's defining
+	// package implements the interface with the same-named method from a
+	// non-obfuscated source. This ensures the interface method name stays
+	// consistent with the concrete implementation.
+	iface, ok := recvType.Underlying().(*types.Interface)
+	if !ok {
+		return false
+	}
+	ifacePkg := fn.Pkg()
+	if ifacePkg == nil {
+		return false
+	}
+	scope := ifacePkg.Scope()
+	for _, scopeName := range scope.Names() {
+		obj := scope.Lookup(scopeName)
+		tn, ok := obj.(*types.TypeName)
+		if !ok {
+			continue
+		}
+		for _, t := range []types.Type{tn.Type(), types.NewPointer(tn.Type())} {
+			if !types.Implements(t, iface) {
+				continue
+			}
+			if isMethodFromNonObfuscatedPkg(tf.curPkg, t, methodName) {
+				return true
+			}
+		}
+	}
+
+	// Also check the current package's types, in case they implement the
+	// interface with a method from a non-obfuscated embedded type.
+	curScope := tf.pkg.Scope()
+	for _, scopeName := range curScope.Names() {
+		obj := curScope.Lookup(scopeName)
+		tn, ok := obj.(*types.TypeName)
+		if !ok {
+			continue
+		}
+		for _, t := range []types.Type{tn.Type(), types.NewPointer(tn.Type())} {
+			if !types.Implements(t, iface) {
+				continue
+			}
+			if isMethodFromNonObfuscatedPkg(tf.curPkg, t, methodName) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// isMethodFromNonObfuscatedPkg checks if the given method name on the given
+// type originates from a non-obfuscated package (e.g. promoted from an
+// unobfuscated embedded type). It inspects the full method set of t.
+func isMethodFromNonObfuscatedPkg(curPkg *listedPackage, t types.Type, name string) bool {
+	mset := types.NewMethodSet(t)
+	for i := range mset.Len() {
+		sel := mset.At(i)
+		fn, ok := sel.Obj().(*types.Func)
+		if !ok || fn.Name() != name {
+			continue
+		}
+		fnPkg := fn.Pkg()
+		if fnPkg == nil {
+			return false // universe scope
+		}
+		lpkg, err := listPackage(curPkg, fnPkg.Path())
+		if err != nil {
+			return false
+		}
+		return !lpkg.ToObfuscate
+	}
+	return false
 }

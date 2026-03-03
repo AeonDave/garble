@@ -100,7 +100,7 @@ Four modes, each adds more protection:
 | `off` (default) | Nothing | None |
 | `directives` | Obfuscates only functions annotated with `//garble:controlflow` | Minimal |
 | `auto` | Automatically selects safe candidate functions | Moderate |
-| `all` | Obfuscates all eligible functions, most aggressive | Highest |
+| `all` | Obfuscates all eligible **safe** functions, most aggressive | Highest |
 
 **What the obfuscation looks like**:
 - Structured `if/else/switch/for` → replaced with opaque jump-table dispatch
@@ -108,6 +108,11 @@ Four modes, each adds more protection:
 - Opaque predicates (always-true/always-false conditions that resist static analysis)
 - XOR-encrypted dispatcher keys
 - Delegate tables to hide real call targets
+
+**Safety policy (important):**
+- Functions with low-level compiler directives (`//go:*`, e.g. `//go:noinline`, `//go:nosplit`, `//go:linkname`) are skipped for control-flow rewriting in **all modes**, including `all`, to avoid fragile transformations.
+- In `auto`, skips are applied at **function level** (not package-wide), so one fragile function does not disable control-flow obfuscation for the rest of your package.
+- For normal usage, operators usually do **not** need per-function directives: `-controlflow=auto` is designed to work out-of-the-box on typical code.
 
 **Without `-controlflow`**: IDA/Ghidra decompile clean `if/else` structures.  
 **With `-controlflow=auto`**: Decompiler produces unreadable spaghetti with hundreds of switch-cases.

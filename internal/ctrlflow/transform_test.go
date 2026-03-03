@@ -41,7 +41,7 @@ func f(x int) int {
 		t.Fatalf("expected first instr to be Phi, got %T", fn.Blocks[0].Instrs[0])
 	}
 	if len(phi.Edges) != len(info) {
-		t.Fatalf("phi edges=%d, want %d", len(phi.Edges), len(info))
+		t.Fatalf("phi edges=%d, want %d (dispatchers)", len(phi.Edges), len(info))
 	}
 }
 

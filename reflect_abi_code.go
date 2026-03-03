@@ -27,11 +27,13 @@ var _np = []string{}
 
 var _nr *_gr
 
+//garble:nocontrolflow
 //disabledgo:linkname _ni internal/abi._ni
 func _ni() {
 	_nr = _mgr(_np)
 }
 
+//garble:nocontrolflow
 //disabledgo:linkname _rn internal/abi._rn
 func _rn(name string) string {
 	return _nr.Replace(name)
@@ -39,6 +41,7 @@ func _rn(name string) string {
 
 // -- Lifted from internal/stringslite --
 
+//garble:nocontrolflow
 func _hp(s, prefix string) bool {
 	return len(s) >= len(prefix) && s[0:len(prefix)] == prefix
 }
@@ -104,6 +107,7 @@ type _tn struct {
 	table []*_tn
 }
 
+//garble:nocontrolflow
 func (t *_tn) add(key, val string, priority int, r *_gr) {
 	if key == "" {
 		if t.priority == 0 {
@@ -163,6 +167,7 @@ func (t *_tn) add(key, val string, priority int, r *_gr) {
 	}
 }
 
+//garble:nocontrolflow
 func (r *_gr) lookup(s string, ignoreRoot bool) (val string, keylen int, found bool) {
 	// Iterate down the trie to the end, and grab the value and keylen with
 	// the highest priority.
@@ -208,6 +213,7 @@ type _gr struct {
 	mapping [256]byte
 }
 
+//garble:nocontrolflow
 func _mgr(oldnew []string) *_gr {
 	r := new(_gr)
 	// Find each byte used, then assign them each an index.
@@ -240,6 +246,7 @@ func _mgr(oldnew []string) *_gr {
 	return r
 }
 
+//garble:nocontrolflow
 func (r *_gr) Replace(s string) string {
 	dst := make([]byte, 0, len(s))
 	var last int

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"go/ast"
+	"go/format"
 	"go/token"
 	"go/types"
 	"math"
@@ -222,6 +223,14 @@ func hasGoDirective(doc *ast.CommentGroup) bool {
 	return false
 }
 
+// shouldSkipForGoDirective reports whether a function should be skipped
+// because it has //go:* directives that are fragile under control-flow
+// rewriting. We skip in all modes, including ModeAll, to favor correctness.
+func shouldSkipForGoDirective(mode Mode, doc *ast.CommentGroup) bool {
+	_ = mode // reserved for future policy tuning by mode
+	return hasGoDirective(doc)
+}
+
 func isCgoGeneratedFile(fset *token.FileSet, file *ast.File) bool {
 	if fset != nil {
 		if tf := fset.File(file.Package); tf != nil {
@@ -375,6 +384,50 @@ func hasBoundMethodClosure(fn *ssa.Function) bool {
 	return false
 }
 
+// hasRiskySSAPatterns checks whether the SSA function body contains
+// constructs that the SSA→AST converter cannot always lower correctly
+// after control-flow flattening. Returns a reason string and true if
+// the function should be skipped.
+func hasRiskySSAPatterns(fn *ssa.Function) (reason string, risky bool) {
+	if len(fn.Blocks) == 0 {
+		return "empty body", true
+	}
+	// Functions with only 1-2 blocks gain nothing from flattening and are
+	// more likely to interact badly with the transforms.
+	if len(fn.Blocks) < 3 {
+		return "too few blocks", true
+	}
+
+	for _, b := range fn.Blocks {
+		for _, instr := range b.Instrs {
+			switch v := instr.(type) {
+			case *ssa.TypeAssert:
+				// Comma-ok type assertions produce tuples; when combined
+				// with flattened phi nodes the generated AST can mis-assign
+				// tuple components.  Skip only in conservative mode.
+				if v.CommaOk {
+					// Allow; the ssa2ast converter handles CommaOk.
+					continue
+				}
+			case *ssa.Select:
+				// Select statements with multiple cases produce complex
+				// tuple unpacking that is fragile after block reordering.
+				if len(v.States) > 2 {
+					return "complex select", true
+				}
+			case *ssa.MakeClosure:
+				// Check for closures over non-anonymous functions (bound methods)
+				if closureFn, ok := v.Fn.(*ssa.Function); ok {
+					if closureFn.Parent() == nil {
+						return "closure over package-level func", true
+					}
+				}
+			}
+		}
+	}
+	return "", false
+}
+
 // hasPredeclaredNames checks if a function has parameters or results that shadow
 // predeclared identifiers like "error", "string", "int", etc.
 func hasPredeclaredNames(fn *ssa.Function) bool {
@@ -438,10 +491,10 @@ func Obfuscate(fset *token.FileSet, ssaPkg *ssa.Package, files []*ast.File, obfR
 		debugf("%s: skip entire package due to fragile heuristics", currentPkgPath)
 		return
 	}
-	if mode != ModeAll && isSoftFragilePackage(ssaPkg, files) {
-		debugf("%s: skip entire package due to fragile heuristics", currentPkgPath)
-		return
-	}
+	// NOTE: avoid package-wide soft skipping in auto mode. We now apply
+	// directive fragility checks at function-candidate granularity so a
+	// single low-level function does not disable control-flow for the
+	// entire package.
 
 	// Load the list of packages that were skipped in previous compilations
 	skippedPackages, err := loadSkippedPackages(sharedTempDir)
@@ -468,7 +521,7 @@ func Obfuscate(fset *token.FileSet, ssaPkg *ssa.Package, files []*ast.File, obfR
 			}
 
 			params, hasDirective, skip := extractControlFlowIntent(funcDecl.Doc)
-			if mode != ModeAll && hasGoDirective(funcDecl.Doc) {
+			if shouldSkipForGoDirective(mode, funcDecl.Doc) {
 				debugf("%s: skip candidate %s due to go directive", currentPkgPath, funcDecl.Name.Name)
 				continue
 			}
@@ -497,6 +550,16 @@ func Obfuscate(fset *token.FileSet, ssaPkg *ssa.Package, files []*ast.File, obfR
 			if mode != ModeAll && hasBoundMethodClosure(ssaFunc) {
 				debugf("%s: skip %s due to bound method closure", currentPkgPath, funcDecl.Name.Name)
 				continue
+			}
+
+			// Skip functions with SSA body patterns that are known to be
+			// fragile under control-flow flattening (e.g., too few blocks,
+			// complex selects, closures over package-level functions).
+			if mode != ModeAll {
+				if reason, risky := hasRiskySSAPatterns(ssaFunc); risky {
+					debugf("%s: skip %s due to risky SSA pattern: %s", currentPkgPath, funcDecl.Name.Name, reason)
+					continue
+				}
 			}
 			// Note: We check for predeclared names at the package level after collecting all candidates
 
@@ -540,10 +603,19 @@ func Obfuscate(fset *token.FileSet, ssaPkg *ssa.Package, files []*ast.File, obfR
 	var funcDecls []*ast.FuncDecl
 
 	for _, candidate := range candidates {
-		// Quick dry-run: attempt conversion without full obfuscation
-		_, err := ssa2ast.Convert(candidate.ssaFunc, funcConfig)
-		if err != nil {
-			debugf("%s: dry-run convert failed for %s: %v", currentPkgPath, candidate.ssaFunc.Name(), err)
+		// Quick dry-run: attempt conversion without full obfuscation.
+		// Wrap in recovery to catch panics from unsupported SSA patterns.
+		var dryErr error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					dryErr = fmt.Errorf("panic: %v", r)
+				}
+			}()
+			_, dryErr = ssa2ast.Convert(candidate.ssaFunc, funcConfig)
+		}()
+		if dryErr != nil {
+			debugf("%s: dry-run convert failed for %s: %v", currentPkgPath, candidate.ssaFunc.Name(), dryErr)
 			continue
 		}
 		ssaFuncs = append(ssaFuncs, candidate.ssaFunc)
@@ -604,7 +676,7 @@ func Obfuscate(fset *token.FileSet, ssaPkg *ssa.Package, files []*ast.File, obfR
 			trashGen = newTrashGenerator(ssaPkg.Prog, ssaPkg.Pkg.Path(), funcConfig.ImportNameResolver, funcConfig.BasePos, obfRand)
 		}
 
-		applyObfuscation := func(ssaFunc *ssa.Function) []dispatcherInfo {
+		applyObfuscation := func(ssaFunc *ssa.Function) ([]dispatcherInfo, error) {
 			if trashBlockCount > 0 {
 				addTrashBlockMarkers(ssaFunc, trashBlockCount, obfRand)
 			}
@@ -621,14 +693,32 @@ func Obfuscate(fset *token.FileSet, ssaPkg *ssa.Package, files []*ast.File, obfR
 				if info := applyFlattening(ssaFunc, obfRand); info != nil {
 					dispatchers = append(dispatchers, info)
 				}
+				// Keep block indexes consistent between flattening passes.
+				// Multi-pass transforms may consume the intermediate ordering.
+				fixBlockIndexes(ssaFunc)
 			}
-			fixBlockIndexes(ssaFunc)
-			return dispatchers
+
+			// Validate SSA integrity after all transforms.
+			// If the graph is structurally broken, skip this function to
+			// avoid generating incorrect code at runtime.
+			if err := validateSSAIntegrity(ssaFunc); err != nil {
+				return nil, fmt.Errorf("SSA integrity check failed for %s: %w", ssaFunc.Name(), err)
+			}
+			return dispatchers, nil
 		}
 
-		dispatchers := applyObfuscation(ssaFunc)
+		dispatchers, obfErr := applyObfuscation(ssaFunc)
+		if obfErr != nil {
+			debugf("%s: %v — skipping function", currentPkgPath, obfErr)
+			continue
+		}
 		for _, anonFunc := range ssaFunc.AnonFuncs {
-			dispatchers = append(dispatchers, applyObfuscation(anonFunc)...)
+			anonDispatchers, anonErr := applyObfuscation(anonFunc)
+			if anonErr != nil {
+				debugf("%s: %v — skipping anon function", currentPkgPath, anonErr)
+				continue
+			}
+			dispatchers = append(dispatchers, anonDispatchers...)
 		}
 
 		// Because of ssa package api limitations, implementation of hardening for control flow flattening dispatcher
@@ -659,14 +749,35 @@ func Obfuscate(fset *token.FileSet, ssaPkg *ssa.Package, files []*ast.File, obfR
 			}
 		}
 
-		astFunc, err := ssa2ast.Convert(ssaFunc, funcConfig)
-		if err != nil {
-			debugf("%s: conversion failed for %s after obfuscation: %v", currentPkgPath, ssaFunc.Name(), err)
-			// SSA→AST conversion failed for this function. Log a warning and skip it.
-			// The function has already been removed from the original file, which will
-			// cause a typecheck error, but we don't propagate the error to allow other
-			// packages/functions to proceed.
+		// Wrap conversion in a recovery block so that panics from the SSA→AST
+		// converter (e.g. unsupported instruction combos, index out of range)
+		// do not crash the entire build. Instead, we skip the function.
+		var astFunc *ast.FuncDecl
+		var convertErr error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					convertErr = fmt.Errorf("panic during SSA→AST conversion: %v", r)
+				}
+			}()
+			astFunc, convertErr = ssa2ast.Convert(ssaFunc, funcConfig)
+		}()
+		if convertErr != nil {
+			debugf("%s: conversion failed for %s after obfuscation: %v", currentPkgPath, ssaFunc.Name(), convertErr)
+			// SSA→AST conversion failed for this function. Skip it and leave
+			// the original function intact in the source file.
 			continue
+		}
+
+		// DEBUG: dump generated function source for inspection
+		if dumpPath := os.Getenv("GARBLE_CONTROLFLOW_DUMP"); dumpPath != "" {
+			dumpFile := filepath.Join(dumpPath, ssaFunc.Name()+".go")
+			if f, err := os.Create(dumpFile); err == nil {
+				fset := token.NewFileSet()
+				format.Node(f, fset, astFunc)
+				f.Close()
+				debugf("%s: dumped %s to %s", currentPkgPath, ssaFunc.Name(), dumpFile)
+			}
 		}
 		if len(prologues) > 0 {
 			// Unwrap BlockStmt prologues so that variables declared with :=

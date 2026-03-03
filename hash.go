@@ -287,6 +287,24 @@ func hashWithStruct(strct *types.Struct, field *types.Var) string {
 	return hashWithCustomSalt(salt, field.Name())
 }
 
+// hashMethodGlobal hashes a method name using a package-independent salt.
+// This ensures the same method name always produces the same obfuscated name
+// across all packages, which is required for -force-rename to preserve
+// interface satisfaction across package boundaries.
+func hashMethodGlobal(name string) string {
+	h := sha256.New()
+	h.Write([]byte("garble:method:"))
+	if flagSeed.present() {
+		h.Write(seedHashInput())
+	} else {
+		h.Write(sharedCache.BinaryContentID)
+		if flagBytes := buildFlagHashInput(); len(flagBytes) > 0 {
+			h.Write(flagBytes)
+		}
+	}
+	return hashWithCustomSalt(h.Sum(nil), name)
+}
+
 // minHashLength and maxHashLength define the range for the number of base64
 // characters to use for the final hashed name.
 //

@@ -73,3 +73,17 @@ func TestShouldObfuscate(t *testing.T) {
 		t.Fatal("ModeAll should ignore directives")
 	}
 }
+
+func TestShouldSkipForGoDirective(t *testing.T) {
+	doc := &ast.CommentGroup{List: []*ast.Comment{{Text: "//go:noinline"}}}
+
+	if !shouldSkipForGoDirective(ModeAuto, doc) {
+		t.Fatal("ModeAuto should skip go directives")
+	}
+	if !shouldSkipForGoDirective(ModeAll, doc) {
+		t.Fatal("ModeAll should also skip go directives for safety")
+	}
+	if shouldSkipForGoDirective(ModeAll, nil) {
+		t.Fatal("nil doc should not be skipped")
+	}
+}
